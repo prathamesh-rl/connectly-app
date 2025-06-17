@@ -11,7 +11,7 @@ st.set_page_config(page_title="Connectly Dashboard", layout="wide")
 st.title("📊 Connectly Messaging Dashboard")
 
 # Tell DuckDB to merge columns by NAME when many Parquets differ slightly
-SCAN_ARGS = ", union_by_name=True"      # <─── key fix for InvalidInputException
+SCAN_ARGS = ", union_by_name=True, allow_missing_files=true"    # <─── key fix for InvalidInputException
 
 # ───────── Helper: discover Parquet files safely ─────────
 def brace_list(patterns, label):
