@@ -212,10 +212,11 @@ segments AS (
   ) a USING (user)
 ),
 seg_pct AS (
-  SELECT sendout_name,
-         ROUND(SUM(seg='Inactive')*100.0/COUNT(*),1)      AS inactive_pct,
-         ROUND(SUM(seg='Active')*100.0/COUNT(*),1)        AS active_pct,
-         ROUND(SUM(seg='Highly Active')*100.0/COUNT(*),1) AS high_pct
+  SELECT
+      sendout_name,
+      ROUND(SUM(CASE WHEN seg='Inactive'      THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS inactive_pct,
+      ROUND(SUM(CASE WHEN seg='Active'        THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS active_pct,
+      ROUND(SUM(CASE WHEN seg='Highly Active' THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS high_pct
   FROM j GROUP BY 1
 )
 SELECT b.*, s.*
