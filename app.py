@@ -15,18 +15,15 @@ SCAN_ARGS = ", union_by_name=True"      # <─── key fix for InvalidInputExc
 
 # ───────── Helper: discover Parquet files safely ─────────
 def brace_list(patterns, label):
-    """
-    Return '{file1,file2,...}' ready for DuckDB.
-    Stop with Streamlit error if no pattern matches.
-    """
+    """Return '{/abs/file1.parquet,/abs/file2.parquet,…}' for DuckDB."""
     for pat in patterns:
-        files = sorted(glob.glob(pat))
-        if files:
-            st.write(f"✅ {label}: {len(files)} files via pattern '{pat}'")
-            return "{" + ",".join(files) + "}"
+        rel_files = sorted(glob.glob(pat))
+        if rel_files:
+            abs_files = [os.path.abspath(p) for p in rel_files]   # ← NEW
+            st.write(f"✅ {label}: {len(abs_files)} files via pattern '{pat}'")
+            return "{" + ",".join(abs_files) + "}"
     st.error(f"❌ No Parquet files found for {label}. Tried: {patterns}")
     st.stop()
-
 # Patterns that match your repo layout
 CAMPAIGN_PATTERNS = [
     "parquet_trim/dispatch_date=*/data_0.parquet",
