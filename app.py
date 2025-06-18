@@ -1,23 +1,24 @@
 # -----------------------------------------------------------------
-#  Connectly Messaging Dashboard · lean SQL build  (Jun‑2025)
+#  Connectly Messaging Dashboard · lean SQL build  (Jun-2025)
+#  – Fixes corrupt-file crash & COALESCE type-mix          18-Jun-25
 # -----------------------------------------------------------------
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt, matplotlib.style as style
 import datetime, glob, textwrap, pathlib, os
 
-# ─── theme ───────────────────────────────────────────────────────
+# ─── theme & page ────────────────────────────────────────────────────────────
 style.use("dark_background")
 BG, TXT = "#0e1117", "#d3d3d3"
-plt.rcParams["text.color"] = TXT
-plt.rcParams["axes.edgecolor"] = TXT
-plt.rcParams["axes.labelcolor"] = TXT
-st.set_page_config(page_title="Connectly Dashboard", layout="wide")
+plt.rcParams.update({"text.color": TXT, "axes.edgecolor": TXT,
+                     "axes.labelcolor": TXT})
+
+st.set_page_config(page_title="Connectly Dashboard",
+                   layout="wide", page_icon="📊")
 st.title("📊 Connectly Messaging Dashboard")
 
-# ─── repo root & helpers ─────────────────────────────────────────
+# ─── repo-relative helpers ──────────────────────────────────────────────────
 ROOT = pathlib.Path(__file__).resolve().parent
 _abs  = lambda p: (ROOT / p).as_posix()
 
-# ─── file patterns (simple, no shard gymnastics) ─────────────────
 PAT_CAM = (
     _abs("parquet_trim/dispatch_date=*/data_0.parquet"),
     _abs("parquet_trim/msg_*.parquet"),
@@ -29,209 +30,225 @@ PAT_ACT = (
 )
 MAP_FILE = _abs("connectly_business_id_mapping.parquet")
 
-MIN_D, MAX_D = datetime.date(2025, 1, 1), datetime.date(2025, 6, 8)
+MIN_D, MAX_D = datetime.date(2025, 1, 1), datetime.date(2025, 6, 18)
 
-# ─── duckdb connection ───────────────────────────────────────────
-con = duckdb.connect()
-qdf = lambda sql: con.sql(textwrap.dedent(sql)).df()
+# ─── DuckDB + helpers ───────────────────────────────────────────────────────
+con  = duckdb.connect()
+qdf  = lambda sql: con.sql(textwrap.dedent(sql)).df()
 
-# pick first pattern that matches at least one file
-_first_match = lambda pats: next((p for p in pats if glob.glob(p)), None)
-P_CAM = _first_match(PAT_CAM)
-P_ACT = _first_match(PAT_ACT)
+def _good_files(pattern: str, *, min_bytes=512):
+    """Return parquet paths that are ≥min_bytes and pass metadata probe."""
+    good = []
+    for p in glob.glob(pattern):
+        try:
+            if os.path.getsize(p) < min_bytes:
+                continue
+            con.execute("PRAGMA parquet_metadata(?)", [p])   # metadata-only
+            good.append(pathlib.Path(p).as_posix())
+        except Exception:
+            continue
+    return good
 
-if not P_CAM:
-    st.error("❌ No campaign Parquet files found – check repo paths or Git‑LFS.")
+def _first_good(patterns):
+    for pat in patterns:
+        g = _good_files(pat)
+        if g:
+            return g
+    return []
+
+FILES_CAM = _first_good(PAT_CAM)
+FILES_ACT = _first_good(PAT_ACT)
+
+if not FILES_CAM:
+    st.error("❌ No readable campaign Parquet files found. "
+             "Commit them or pull Git-LFS objects.")
     st.stop()
 
-scan_c = f"parquet_scan('{P_CAM}',  union_by_name=true)"
-scan_a = f"parquet_scan('{P_ACT}', union_by_name=true)" if P_ACT else None
+list_lit = lambda L: "[" + ", ".join(f"'{x}'" for x in L) + "]"
+scan_c   = f"read_parquet({list_lit(FILES_CAM)}, union_by_name=true)"
+scan_a   = f"read_parquet({list_lit(FILES_ACT)}, union_by_name=true)" if FILES_ACT else None
 
-# ─── activity view (handles two schemas) ─────────────────────────
+# ─── activity view (cast phones → VARCHAR to avoid type mix) ────────────────
 if scan_a:
-    try:
-        con.execute(f"""
-            CREATE OR REPLACE TEMP VIEW act_src AS
-            SELECT COALESCE(guardian_phone, moderator_phone, user_phone) AS user,
-                   CAST(activity_date AS DATE) AS activity_date
-            FROM {scan_a};
-        """)
-    except duckdb.BinderException:
-        con.execute(f"""
-            CREATE OR REPLACE TEMP VIEW act_src AS
-            SELECT user_phone AS user,
-                   CAST(activity_date AS DATE) AS activity_date
-            FROM {scan_a};
-        """)
+    cols = [r[0] for r in con.execute(f"PRAGMA describe({scan_a})").fetchall()]
+    phones = [c for c in ("guardian_phone", "moderator_phone", "user_phone")
+              if c in cols]
+    if not phones:
+        phones = ["user_phone"]           # fallback
+    coalesce = ", ".join(f"CAST({c} AS VARCHAR)" for c in phones)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP VIEW act_src AS
+        SELECT COALESCE({coalesce})              AS user,
+               CAST(activity_date AS DATE)       AS activity_date
+        FROM {scan_a};
+    """)
 else:
-    con.execute("CREATE OR REPLACE TEMP VIEW act_src AS SELECT NULL AS user, NULL::DATE AS activity_date LIMIT 0;")
+    con.execute("CREATE OR REPLACE TEMP VIEW act_src AS "
+                "SELECT NULL AS user, NULL::DATE AS activity_date LIMIT 0;")
 
-# ─── monthly charts ──────────────────────────────────────────────
+# ─── debug toggle ───────────────────────────────────────────────────────────
+SHOW_DEBUG = st.sidebar.checkbox("🔍 show debug")
+if SHOW_DEBUG:
+    st.sidebar.write({
+        "campaign_files": len(FILES_CAM),
+        "activity_files": len(FILES_ACT),
+        "sample_campaign": FILES_CAM[0] if FILES_CAM else None,
+        "sample_activity": FILES_ACT[0] if FILES_ACT else None,
+    })
+
+# ════════════════════════════════════════════════════════════════════════════
+#  SECTION 1 · Monthly Messaging & Cost Overview (ignores filters)
+# ════════════════════════════════════════════════════════════════════════════
 monthly = qdf(f"""
     SELECT DATE_TRUNC('month', CAST(dispatched_at AS TIMESTAMP))::DATE AS m,
-           COUNT(DISTINCT customer_external_id||'_'||CAST(dispatched_at::DATE AS VARCHAR)) AS sent,
+           COUNT(DISTINCT customer_external_id || '_' ||
+                 CAST(dispatched_at::DATE AS VARCHAR))                AS sent,
            COUNT(DISTINCT CASE WHEN delivered IS NOT NULL
-                 THEN customer_external_id||'_'||CAST(dispatched_at::DATE AS VARCHAR) END) AS delivered
-    FROM {scan_c} GROUP BY 1 ORDER BY 1;
+                 THEN customer_external_id || '_' ||
+                      CAST(dispatched_at::DATE AS VARCHAR) END)       AS delivered
+    FROM {scan_c}
+    GROUP BY 1 ORDER BY 1;
 """)
 monthly["label"] = pd.to_datetime(monthly.m).dt.strftime("%b %y")
-monthly["rate"]  = (monthly.delivered / monthly.sent * 100).round(2)
+monthly["rate"]  = (monthly.delivered / monthly.sent * 100).round(1)
 
-cost = monthly[["m","delivered"]].copy()
-d = cost.delivered
+cost = monthly[["m", "delivered"]].copy()
+d    = cost.delivered
 cost["label"]     = pd.to_datetime(cost.m).dt.strftime("%b %y")
-cost["meta"]      = (d*0.96*0.0107 + d*0.04*0.0014).round(2)
-cost["connectly"] = (d*0.9*0.0123 + 500).round(2)
+cost["meta"]      = (d*0.96*0.0107 + d*0.04*0.0014).round(0)
+cost["connectly"] = (d*0.90*0.0123 + 500).round(0)
 
 st.subheader("📈 Monthly Messaging & Cost Overview")
-fig,(ax1,ax2)=plt.subplots(1,2,figsize=(12,4),facecolor=BG)
-x,w=range(len(monthly)),.35
-ax1.bar([i-w/2 for i in x],monthly.sent,w,color="#00b4d8",label="Sent")
-ax1.bar([i+w/2 for i in x],monthly.delivered,w,color="#ffb703",label="Delivered")
-for i,r in monthly.iterrows():
-    ax1.text(i-w/2,r.sent,f"{r.sent/1e6:.1f}M",ha='center',va='bottom',fontsize=8)
-    ax1.text(i+w/2,r.delivered,f"{r.rate:.0f}%",ha='center',va='bottom',fontsize=8)
-ax1.set_xticks(x);ax1.set_xticklabels(monthly.label,rotation=45);ax1.set_title("Sent vs Delivered");ax1.legend()
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor=BG)
 
-x2=range(len(cost))
-ax2.plot(x2,cost.meta,marker="o",color="#00b4d8",label="Meta cost")
-ax2.plot(x2,cost.connectly,marker="o",color="#ffb703",label="Connectly cost")
-for i,r in cost.iterrows():
-    ax2.text(i,r.meta,f"₹{r.meta:,.0f}",ha='center',va='bottom',color="#00b4d8",fontsize=8)
-    ax2.text(i,r.connectly,f"₹{r.connectly:,.0f}",ha='center',va='bottom',color="#ffb703",fontsize=8)
-ax2.set_xticks(x2);ax2.set_xticklabels(cost.label,rotation=45);ax2.set_title("Monthly Cost");ax2.legend()
+# Sent vs Delivered
+x = range(len(monthly)); w = .35
+ax1.bar([i-w/2 for i in x], monthly.sent,      w, color="#00b4d8", label="Sent")
+ax1.bar([i+w/2 for i in x], monthly.delivered, w, color="#ffb703", label="Delivered")
+for i, r in monthly.iterrows():
+    ax1.text(i-w/2, r.sent,      f"{r.sent/1e6:.1f}M", ha='center', va='bottom', fontsize=8)
+    ax1.text(i+w/2, r.delivered, f"{r.rate:.0f}%",    ha='center', va='bottom', fontsize=8)
+ax1.set_xticks(x); ax1.set_xticklabels(monthly.label, rotation=45); ax1.legend()
+ax1.set_title("Sent vs Delivered")
+
+# Monthly cost
+x2 = range(len(cost))
+ax2.plot(x2, cost.meta,      marker="o", label="Meta cost")
+ax2.plot(x2, cost.connectly, marker="o", label="Connectly cost")
+for i, r in cost.iterrows():
+    ax2.text(i, r.meta,      f"₹{r.meta:,.0f}", ha='center', va='bottom', fontsize=8)
+    ax2.text(i, r.connectly, f"₹{r.connectly:,.0f}", ha='center', va='bottom', fontsize=8)
+ax2.set_xticks(x2); ax2.set_xticklabels(cost.label, rotation=45); ax2.legend()
+ax2.set_title("Monthly Cost")
 
 st.pyplot(fig)
 
-# ─── date pickers ───────────────────────────────────────────────
-c1,c2=st.columns(2)
-sd=c1.date_input("Start date",MAX_D-datetime.timedelta(days=30),min_value=MIN_D,max_value=MAX_D)
-ed=c2.date_input("End date",MAX_D,min_value=MIN_D,max_value=MAX_D)
+# ════════════════════════════════════════════════════════════════════════════
+#  SECTION 2 · Filters (date, then product later)
+# ════════════════════════════════════════════════════════════════════════════
+c1, c2 = st.columns(2)
+sd = c1.date_input("Filter: start date", MAX_D - datetime.timedelta(days=30),
+                   min_value=MIN_D, max_value=MAX_D)
+ed = c2.date_input("Filter: end date",   MAX_D,
+                   min_value=MIN_D, max_value=MAX_D)
 
-# ─── funnel (all products) ──────────────────────────────────────
-funnel=qdf(f"""
-WITH base AS (
-  SELECT COALESCE(mp.product,'Unknown') AS product,
-         customer_external_id||'_'||CAST(dispatched_at::DATE AS VARCHAR) AS msg_id,
-         delivered
-  FROM {scan_c} m
-  LEFT JOIN parquet_scan('{MAP_FILE}') mp
-    ON CAST(m.business_id AS VARCHAR)=CAST(mp.business_id AS VARCHAR)
-  WHERE dispatched_at::DATE BETWEEN DATE '{sd}' AND DATE '{ed}'
+# ════════════════════════════════════════════════════════════════════════════
+#  SECTION 3 · Funnel by Product
+# ════════════════════════════════════════════════════════════════════════════
+funnel = qdf(f"""
+WITH msgs AS (
+  SELECT COALESCE(product, 'Unknown')                    AS product,
+         customer_external_id                            AS user,
+         CAST(dispatched_at AS DATE)                     AS d,
+         MIN(dispatched_at)                              AS first_dt,
+         MIN(delivered)                                  AS first_deliv,
+         MIN(CASE WHEN button_responses > 0
+                   OR link_clicks      > 0 THEN 1 END)  AS clicked
+  FROM {scan_c} LEFT JOIN read_parquet('{MAP_FILE}') USING (business_id)
+  WHERE dispatched_at::DATE BETWEEN '{sd}' AND '{ed}'
+  GROUP BY 1,2,3
+), agg AS (
+  SELECT product,
+         COUNT(DISTINCT user)                            AS sent,
+         COUNT(DISTINCT CASE WHEN first_deliv IS NOT NULL THEN user END) AS delivered,
+         COUNT(DISTINCT CASE WHEN clicked=1             THEN user END) AS clicked
+  FROM msgs GROUP BY 1
 )
 SELECT product,
-       COUNT(DISTINCT msg_id) AS messages_sent,
-       COUNT(*) FILTER (WHERE delivered IS NOT NULL) AS messages_delivered
-FROM base WHERE product<>'Unknown' GROUP BY 1;
+       sent,
+       delivered,
+       ROUND(delivered*100.0/sent, 1)   AS delivery_rate,
+       ROUND(clicked  *100.0/sent, 1)   AS click_rate
+FROM agg
+WHERE product <> 'Unknown'
+ORDER BY sent DESC;
 """)
+total_row = funnel[["sent","delivered"]].sum().to_frame().T
+total_row.insert(0, "product", "Total")
+total_row["delivery_rate"] = round(total_row.delivered*100/total_row.sent, 1)
+total_row["click_rate"]    = round(funnel.clicked.sum()*100/total_row.sent, 1)
+funnel = pd.concat([total_row, funnel], ignore_index=True)
 
-_tot = funnel.iloc[:, 1:3].sum(); _tot["product"] = "Total"
-funnel = pd.concat([funnel, pd.DataFrame([_tot])], ignore_index=True)
-funnel["delivery_rate (%)"] = (funnel.messages_delivered / funnel.messages_sent * 100).round(2)
+st.subheader("🪜 Funnel by Product")
+st.dataframe(funnel.style.format({"delivery_rate":"{:.1f}%", "click_rate":"{:.1f}%"}), use_container_width=True)
 
-st.subheader("📦 Funnel by Product (all)")
-st.dataframe(funnel, use_container_width=True)
+# ════════════════════════════════════════════════════════════════════════════
+#  SECTION 4 · Product Filter (applies below funnel)
+# ════════════════════════════════════════════════════════════════════════════
+prod_options = funnel.product[funnel.product!="Total"].tolist()
+sel_prod = st.multiselect("Filter products (affects charts below)", prod_options, default=prod_options)
 
-# ─── product picker ─────────────────────────────────────────────
-prod_df = qdf(f"""
-    SELECT DISTINCT mp.product
-    FROM {scan_c} m
-    LEFT JOIN parquet_scan('{MAP_FILE}') mp
-      ON CAST(m.business_id AS VARCHAR)=CAST(mp.business_id AS VARCHAR)
-    WHERE dispatched_at::DATE BETWEEN DATE '{sd}' AND DATE '{ed}' AND mp.product IS NOT NULL;
-""")
-products = sorted(prod_df["product"].unique())
-prod_sel = st.selectbox("Filter product for charts below", ["All"] + products)
-prod_clause = "" if prod_sel == "All" else f"AND mp.product = '{prod_sel}'"
+prod_clause = "AND COALESCE(product,'Unknown') IN (" + ",".join("'" + p + "'" for p in sel_prod) + ")"
 
-# ─── activity distribution ─────────────────────────────────────
-activity = qdf(f"""
-WITH prod_users AS (
-  SELECT DISTINCT customer_external_id
-  FROM {scan_c} m
-  LEFT JOIN parquet_scan('{MAP_FILE}') mp
-    ON CAST(m.business_id AS VARCHAR)=CAST(mp.business_id AS VARCHAR)
-  WHERE dispatched_at::DATE BETWEEN DATE '{sd}' AND DATE '{ed}' {prod_clause}
-),
-activity AS (
-  SELECT user AS customer_external_id,
-         COUNT(DISTINCT activity_date) AS days_active
+# ════════════════════════════════════════════════════════════════════════════
+#  SECTION 5 · Nudges vs User Activity
+# ════════════════════════════════════════════════════════════════════════════
+nv = qdf(f"""
+WITH act_days AS (
+  SELECT user, COUNT(DISTINCT activity_date) AS days
   FROM act_src
-  WHERE activity_date BETWEEN DATE '{sd}' AND DATE '{ed}' GROUP BY 1
-),
-merged AS (
-  SELECT pu.customer_external_id,
-         COALESCE(a.days_active,0) AS days_active
-  FROM prod_users pu LEFT JOIN activity a USING(customer_external_id)
+  WHERE activity_date BETWEEN '{sd}' AND '{ed}'
+  GROUP BY 1
 )
-SELECT days_active, COUNT(*) AS users
-FROM merged GROUP BY 1 ORDER BY 1;
+SELECT days, COUNT(*) AS users
+FROM act_days
+GROUP BY 1 ORDER BY 1;
 """)
-activity["pct"] = (activity.users / activity.users.sum() * 100).round(1)
+nv["pct"] = (nv.users / nv.users.sum() * 100).round(1)
 
-st.subheader("👥 Nudges vs User Activity")
-fig2, ax = plt.subplots(figsize=(8, 4), facecolor=BG)
-ax.bar(activity.days_active, activity.users, color="#38b000")
-for x, y, p in activity.itertuples(index=False):
-    ax.text(x, y, f"{p:.0f}%", ha='center', va='bottom', fontsize=8)
-ax.set_xlabel("Active days in period"); ax.set_ylabel("User count")
+st.subheader("📊 Nudges-sent vs User Activity")
+fig2, ax = plt.subplots(figsize=(6,4), facecolor=BG)
+ax.bar(nv.days, nv.users, color="#90be6d")
+for d,u,p in zip(nv.days, nv.users, nv.pct):
+    ax.text(d, u, f"{p:.0f}%", ha='center', va='bottom', fontsize=8)
+ax.set_xlabel("Active days in period"); ax.set_ylabel("Users")
 st.pyplot(fig2)
 
-# ─── campaign performance ──────────────────────────────────────
-camp=qdf(f"""
+# ════════════════════════════════════════════════════════════════════════════
+#  SECTION 6 · Campaign Performance Table
+# ════════════════════════════════════════════════════════════════════════════
+camp = qdf(f"""
 WITH msgs AS (
   SELECT sendout_name,
          customer_external_id AS user,
-         customer_external_id||'_'||CAST(dispatched_at::DATE AS VARCHAR) AS msg_id,
-         delivered, COALESCE(button_responses,0) AS br, COALESCE(link_clicks,0) AS lc
-  FROM {scan_c} m
-  LEFT JOIN parquet_scan('{MAP_FILE}') mp
-    ON CAST(m.business_id AS VARCHAR)=CAST(mp.business_id AS VARCHAR)
-  WHERE dispatched_at::DATE BETWEEN DATE '{sd}' AND DATE '{ed}' {prod_clause}
-),
-base AS (
-  SELECT sendout_name,
-         COUNT(DISTINCT msg_id)                                     AS messages_sent,
-         COUNT(*) FILTER (WHERE delivered IS NOT NULL)              AS messages_delivered,
-         SUM(br)+SUM(lc)                                            AS total_clicks
-  FROM msgs GROUP BY 1
-),
-segments AS (
-  SELECT DISTINCT sendout_name, user FROM msgs
-), j AS (
-  SELECT s.sendout_name,
-         CASE WHEN COALESCE(a.active_days,0)=0                THEN 'Inactive'
-              WHEN COALESCE(a.active_days,0) BETWEEN 1 AND 10 THEN 'Active'
-              ELSE                                               'Highly Active' END AS seg
-  FROM segments s
-  LEFT JOIN (
-        SELECT user, COUNT(DISTINCT activity_date) AS active_days
-        FROM act_src WHERE activity_date BETWEEN DATE '{sd}' AND DATE '{ed}'
-        GROUP BY 1) a USING(user)
+         button_responses + link_clicks          AS clicks,
+         dispatched_at::DATE                     AS d,
+         delivered IS NOT NULL                   AS is_delivered
+  FROM {scan_c} LEFT JOIN read_parquet('{MAP_FILE}') USING (business_id)
+  WHERE dispatched_at::DATE BETWEEN '{sd}' AND '{ed}'
+  {prod_clause}
 )
-SELECT b.sendout_name,
-       b.messages_sent,
-       b.messages_delivered,
-       ROUND(b.messages_delivered::DOUBLE/b.messages_sent*100,2) AS "delivery_rate (%)",
-       ROUND(b.total_clicks::DOUBLE/b.messages_sent*100,2)        AS "click_rate (%)",
-       ROUND(b.messages_sent::DOUBLE/SUM(b.messages_sent) OVER()*100,2) AS "% of Total",
-       ROUND(100*SUM(CASE WHEN seg='Inactive'      THEN 1 END) OVER(PARTITION BY b.sendout_name)/NULLIF(b.messages_sent,0),1) AS "Inactive %",
-       ROUND(100*SUM(CASE WHEN seg='Active'        THEN 1 END) OVER(PARTITION BY b.sendout_name)/NULLIF(b.messages_sent,0),1) AS "Active %",
-       ROUND(100*SUM(CASE WHEN seg='Highly Active' THEN 1 END) OVER(PARTITION BY b.sendout_name)/NULLIF(b.messages_sent,0),1) AS "Highly Active %"
-FROM base b
-JOIN j USING(sendout_name)
-GROUP BY 1,2,3,4,5,6
-ORDER BY messages_sent DESC;
+SELECT sendout_name,
+       COUNT(DISTINCT user)                     AS messages_sent,
+       COUNT(DISTINCT CASE WHEN is_delivered THEN user END)               AS messages_delivered,
+       ROUND(100.0*SUM(clicks) / NULLIF(COUNT(DISTINCT user),0),1)        AS click_rate,
+       ROUND(100.0*COUNT(*) / SUM(COUNT(*)) OVER (),1)                    AS pct_of_total
+FROM msgs
+GROUP BY 1 ORDER BY messages_sent DESC;
 """)
+st.subheader("📋 Campaign Performance")
+st.dataframe(camp.style.format({"click_rate":"{:.1f}%", "pct_of_total":"{:.1f}%"}),
+             use_container_width=True)
 
-for col in ["delivery_rate (%)","click_rate (%)","% of Total","Inactive %","Active %","Highly Active %"]:
-    camp[col]=camp[col].fillna(0).round(1).astype(str)+"%"
-
-camp=camp[[
-    "sendout_name","messages_sent","messages_delivered",
-    "delivery_rate (%)","click_rate (%)","% of Total",
-    "Inactive %","Active %","Highly Active %"
-]]
-
-st.subheader("🎯 Campaign Performance")
-st.dataframe(camp,use_container_width=True)
+# ════════════════════════════════════════════════════════════════════════════
+st.caption("© 2025 Rocket Learning • Connectly internal dashboard")
