@@ -37,12 +37,13 @@ lit = lambda paths: "[" + ", ".join(f"'{pathlib.Path(p).as_posix()}'" for p in p
 scan_c = f"read_parquet({lit(FILES_CAM)}, union_by_name=true)"
 scan_a = f"read_parquet({lit(FILES_ACT)}, union_by_name=true)" if FILES_ACT else None
 
-# ─── DuckDB connection (per session, 600 MB cap) ────────────────
 @st.cache_resource(show_spinner=False)
 def get_con():
     con = duckdb.connect()
-    con.execute("PRAGMA memory_limit='600MB'")
+    con.execute("PRAGMA memory_limit='850MB'")   # was 600 MB
+    con.execute("PRAGMA temp_directory='/tmp'")  # allow spilling
     return con
+
 
 con = get_con()
 qdf = lambda sql: con.sql(textwrap.dedent(sql)).df()
