@@ -6,9 +6,13 @@ Streamlit app for Connectly analytics that **self‑heals** against:
 • zero‑byte or corrupt shards ("no magic bytes")  
 • schema drift in the activity files (`guardian_phone|moderator_phone|user_phone`)  
 
-This version aggressively *validates every parquet* before DuckDB ever sees it, so
-all the `InvalidInputException` / `IOError` crashes in the previous logs are
-eliminated.
+**New in this commit**  🔧  (fixes the “No readable campaign Parquet shards” on
+Streamlit Cloud):
+
+* All parquet‑glob patterns are resolved *relative to the repo root* so the same
+  code works locally *and* in Cloud’s `/mount/src/<repo>/` sandbox.
+* A small debug panel shows exactly which shards were accepted / rejected when
+  you check the “🔍 show debug” checkbox in the sidebar.
 """
 
 from __future__ import annotations
@@ -34,14 +38,21 @@ st.set_page_config(
     page_icon="📊",
 )
 
+# Resolve repo root regardless of Cloud sandbox path ----------------------------
+ROOT = pathlib.Path(__file__).resolve().parent  # …/connectly-app
+
+def _abs(pat: str) -> str:
+    """Return absolute‑posix path pattern so DuckDB’s glob works everywhere."""
+    return (ROOT / pat).as_posix()
+
 # Parquet patterns ----------------------------------------------------------------
-CAMPAIGN_PATTERNS: List[str] = [
-    "parquet_trim/dispatch_date=*/data_0.parquet",  # primary
-    "parquet_trim/msg_*.parquet",                  # fallback
+CAMPAIGN_PATTERNS: List[str] = list(map(_abs, [
+    "parquet_trim/dispatch_date=*/data_0.parquet",      # primary
+    "parquet_trim/msg_*.parquet",                      # fallback
     "parquet_output/dispatch_date=*/data_0*.parquet",  # legacy
-]
-ACTIVITY_PATTERN = "activity_chunks/activity_data_*.parquet"
-MAPPING_PATH = "connectly_business_id_mapping.parquet"
+]))
+ACTIVITY_PATTERN = _abs("activity_chunks/activity_data_*.parquet")
+MAPPING_PATH = _abs("connectly_business_id_mapping.parquet")
 
 # Cost constants ------------------------------------------------------------------
 META_COST_PER_MSG = 0.96 * 0.0107 + 0.04 * 0.0014        # ≈ ₹0.010456
@@ -51,6 +62,13 @@ CONNECTLY_FLAT_FEE = 500                                 # ₹
 ################################################################################
 # ─────────────────────────────────  HELPERS  ───────────────────────────────── #
 ################################################################################
+
+# Sidebar debug toggle -----------------------------------------------------------
+SHOW_DEBUG = st.sidebar.checkbox("🔍 show debug")
+
+def _dbg(msg: str):
+    if SHOW_DEBUG:
+        st.sidebar.write(msg)
 
 # Global in‑memory DB (single instance) -------------------------------------------
 @st.cache_resource(show_spinner=False)
@@ -70,33 +88,39 @@ def _is_parquet_ok(path: str) -> bool:
 
 # ── helper: resolve good parquet shards (skip zero‑byte / corrupt) --------------
 def _good_shards(patterns: List[str], *, min_bytes: int = 1024) -> List[str]:
-    paths: List[str] = []
+    ok, bad = [], []
     for pat in patterns:
         for p in glob.glob(pat):
-            if os.path.getsize(p) >= min_bytes and _is_parquet_ok(p):
-                paths.append(pathlib.Path(p).as_posix())  # posix for DuckDB
-    return sorted(paths)
+            if os.path.getsize(p) < min_bytes or not _is_parquet_ok(p):
+                bad.append(p)
+            else:
+                ok.append(p)
+    _dbg({"pattern": patterns, "ok": len(ok), "bad": len(bad)})
+    return sorted(ok)
 
 # Data loaders --------------------------------------------------------------------
 @st.cache_data(show_spinner="Loading campaign data…")
 def load_campaign() -> pd.DataFrame:
     paths = _good_shards(CAMPAIGN_PATTERNS)
     if not paths:
-        st.error("❌ No readable campaign Parquet shards found.")
+        st.error("❌ No readable campaign Parquet shards found in repo. Make sure the data folders are committed or the path is correct.")
         st.stop()
+    _dbg({"campaign_shards": len(paths)})
     return con.sql("SELECT * FROM read_parquet($paths, union_by_name=true)", {"paths": paths}).df()
 
 @st.cache_data(show_spinner="Loading activity data…")
 def load_activity() -> pd.DataFrame:
     paths = _good_shards([ACTIVITY_PATTERN])
     if not paths:
-        st.error("❌ No readable activity Parquet shards found.")
+        st.error("❌ No readable activity Parquet shards found in repo.")
         st.stop()
+    _dbg({"activity_shards": len(paths)})
     return con.sql("SELECT * FROM read_parquet($paths, union_by_name=true)", {"paths": paths}).df()
 
 @st.cache_data(show_spinner=False)
 def load_mapping() -> pd.DataFrame:
     if not os.path.exists(MAPPING_PATH):
+        _dbg("mapping parquet missing → defaulting to 'Unknown'")
         return pd.DataFrame(columns=["business_id", "product"])
     return pd.read_parquet(MAPPING_PATH)
 
