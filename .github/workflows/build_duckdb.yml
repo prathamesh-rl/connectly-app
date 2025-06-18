@@ -2,7 +2,7 @@ name: Build compact DuckDB
 
 on:
   schedule:
-    - cron: "30 0 * * *"          # nightly
+    - cron: "30 0 * * *"          # nightly 00:30 UTC
   workflow_dispatch:
 
 jobs:
@@ -11,15 +11,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: true               # pulls LFS objects & enables hooks
 
       - name: Build connectly.duckdb via Python
         run: |
-          pip install duckdb
+          python -m pip install duckdb
           python - <<'PY'
-          import duckdb, glob, pathlib, itertools, os
+          import duckdb, glob, pathlib, itertools, textwrap
+
+          print("▶ building camp & act tables")
           con = duckdb.connect("connectly.duckdb")
-          print("▶ building camp table...")
+
           camp_files = list(itertools.chain.from_iterable(
               glob.glob(p) for p in [
                   "parquet_trim/dispatch_date=*/data_0.parquet",
@@ -29,11 +31,11 @@ jobs:
           con.execute(f"""
             CREATE OR REPLACE TABLE camp AS
             SELECT * FROM read_parquet(
-              [{', '.join(repr(pathlib.Path(f).as_posix()) for f in camp_files)}],
+              [{', '.join(repr(pathlib.Path(p).as_posix()) for p in camp_files)}],
               union_by_name=true
             );
           """)
-          print("▶ building act table...")
+
           act_files = list(itertools.chain.from_iterable(
               glob.glob(p) for p in [
                   "activity_trim/act_*.parquet",
@@ -43,12 +45,13 @@ jobs:
               con.execute(f"""
                 CREATE OR REPLACE TABLE act AS
                 SELECT * FROM read_parquet(
-                  [{', '.join(repr(pathlib.Path(f).as_posix()) for f in act_files)}],
+                  [{', '.join(repr(pathlib.Path(p).as_posix()) for p in act_files)}],
                   union_by_name=true
                 );
               """)
           else:
               con.execute("CREATE OR REPLACE TABLE act(user VARCHAR, activity_date DATE);")
+
           con.close()
           print("✅ connectly.duckdb built")
           PY
