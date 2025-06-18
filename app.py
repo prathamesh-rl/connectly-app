@@ -1,8 +1,8 @@
 # -----------------------------------------------------------------
-#  Connectly Messaging Dashboard · memory-capped build (final)
+#  Connectly Messaging Dashboard · GitHub-baked DuckDB
 # -----------------------------------------------------------------
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt, matplotlib.style as style
-import datetime, glob, itertools, textwrap, pathlib, gc
+import datetime, gc
 
 # ─── theme / page ------------------------------------------------
 style.use("dark_background")
@@ -11,105 +11,80 @@ plt.rcParams["text.color"] = TXT
 st.set_page_config(page_title="Connectly Dashboard", layout="wide")
 st.title("📊 Connectly Messaging Dashboard")
 
-# ─── file patterns ----------------------------------------------
-PAT_CAM = (
-    "parquet_trim/dispatch_date=*/data_0.parquet",
-    "parquet_trim/msg_*.parquet",
-    "parquet_output/dispatch_date=*/data_0*.parquet",
-)
-PAT_ACT = (
-    "activity_trim/act_*.parquet",
-    "activity_chunks/activity_data_*.parquet",
-)
-MAP_FILE = "connectly_business_id_mapping.parquet"
-
-expand = lambda pats: list(itertools.chain.from_iterable(glob.glob(p) for p in pats))
-FILES_CAM, FILES_ACT = expand(PAT_CAM), expand(PAT_ACT)
-if not FILES_CAM:
-    st.error("❌ No campaign Parquet shards found"); st.stop()
-
-lit = lambda L: "[" + ", ".join(f"'{pathlib.Path(p).as_posix()}'" for p in L) + "]"
-scan_c = f"read_parquet({lit(FILES_CAM)}, union_by_name=true)"
-scan_a = f"read_parquet({lit(FILES_ACT)}, union_by_name=true)" if FILES_ACT else None
-
-# ─── DuckDB connection (per session) ----------------------------
+# ─── DuckDB connection -------------------------------------------
 @st.cache_resource(show_spinner=False)
 def get_con():
-    con = duckdb.connect()
-    con.execute("PRAGMA memory_limit='850MB'")   # under Cloud’s 1 GB soft cap
-    con.execute("PRAGMA temp_directory='/tmp'")  # spill if still needed
+    con = duckdb.connect("connectly.duckdb", read_only=True)
     return con
 
 con = get_con()
-qdf = lambda q: con.sql(textwrap.dedent(q)).df()
+qdf = lambda q: con.sql(q).df()
 
-# ─── activity view ----------------------------------------------
-if scan_a:
-    cols = list(con.sql(f"SELECT * FROM {scan_a} LIMIT 0").df().columns)
-    phones = [c for c in ("guardian_phone","moderator_phone","user_phone") if c in cols] or ["user_phone"]
-    casted = ", ".join(f"CAST({c} AS VARCHAR)" for c in phones)
-    con.execute(f"""
-      CREATE OR REPLACE TEMP VIEW act_src AS
-      SELECT COALESCE({casted}) AS user,
-             CAST(activity_date AS DATE) AS activity_date
-      FROM {scan_a}
-    """)
-else:
-    con.execute("CREATE OR REPLACE TEMP VIEW act_src AS SELECT NULL AS user, NULL::DATE AS activity_date LIMIT 0;")
+# ─── activity temp view ------------------------------------------
+con.execute("""
+  CREATE OR REPLACE TEMP VIEW act_src AS
+  SELECT user_phone AS user,
+         CAST(activity_date AS DATE) AS activity_date
+  FROM act
+""")
 
-MIN_D, MAX_D = datetime.date(2025,1,1), datetime.date(2025,6,18)
+MIN_D, MAX_D = datetime.date(2025, 1, 1), datetime.date(2025, 6, 18)
 
-# ═════════════════════════ SECTION 1 · Monthly overview ══════════════════════
+# ════════════════════ SECTION 1 – Monthly Overview ══════════════
 @st.cache_data(ttl=900)
 def monthly_df():
-    # pre-deduplicate by day+user to shrink working set
-    return qdf(f"""
+    return qdf("""
       WITH daily AS (
-        SELECT DATE_TRUNC('day', CAST(dispatched_at AS TIMESTAMP))::DATE AS d,
-               DATE_TRUNC('month', CAST(dispatched_at AS TIMESTAMP))::DATE AS m,
+        SELECT DATE_TRUNC('day', dispatched_at)::DATE AS d,
+               DATE_TRUNC('month', dispatched_at)::DATE AS m,
                customer_external_id,
                MIN(delivered) AS delivered
-        FROM (SELECT dispatched_at, delivered, customer_external_id FROM {scan_c})
+        FROM camp
         GROUP BY 1,2,3
       )
       SELECT m,
              COUNT(*)                          AS sent,
              COUNT(*) FILTER (WHERE delivered) AS delivered
-      FROM daily GROUP BY 1 ORDER BY 1;
+      FROM daily GROUP BY 1 ORDER BY 1
     """)
 
 monthly = monthly_df()
 monthly["label"] = pd.to_datetime(monthly.m).dt.strftime("%b %y")
-monthly["rate"]  = (monthly.delivered/monthly.sent*100).round(1)
+monthly["rate"] = (monthly.delivered / monthly.sent * 100).round(1)
 
-cost = monthly[["m","delivered"]].copy()
+cost = monthly[["m", "delivered"]].copy()
 d = cost.delivered
-cost["label"]     = pd.to_datetime(cost.m).dt.strftime("%b %y")
-cost["meta"]      = (d*0.96*0.0107 + d*0.04*0.0014).round(0)
-cost["connectly"] = (d*0.9*0.0123  + 500).round(0)
+cost["label"] = pd.to_datetime(cost.m).dt.strftime("%b %y")
+cost["meta"] = (d * 0.96 * 0.0107 + d * 0.04 * 0.0014).round(0)
+cost["connectly"] = (d * 0.9 * 0.0123 + 500).round(0)
 
 st.subheader("📈 Monthly Messaging & Cost Overview")
-fig,(ax1,ax2)=plt.subplots(1,2,figsize=(12,4),facecolor=BG)
-x,w=range(len(monthly)),.35
-ax1.bar([i-w/2 for i in x],monthly.sent,w,color="#00b4d8")
-ax1.bar([i+w/2 for i in x],monthly.delivered,w,color="#ffb703")
-for i,r in monthly.iterrows():
-    ax1.text(i-w/2,r.sent,f"{r.sent/1e6:.1f}M",ha='center',va='bottom',fontsize=8)
-    ax1.text(i+w/2,r.delivered,f"{r.rate:.0f}%",ha='center',va='bottom',fontsize=8)
-ax1.set_xticks(x);ax1.set_xticklabels(monthly.label,rotation=45);ax1.set_title("Sent vs Delivered")
-ax2.plot(range(len(cost)),cost.meta,marker="o",color="#00b4d8",label="Meta cost")
-ax2.plot(range(len(cost)),cost.connectly,marker="o",color="#ffb703",label="Connectly cost")
-for i,r in cost.iterrows():
-    ax2.text(i,r.meta,f"₹{r.meta:,.0f}",ha='center',va='bottom',color="#00b4d8",fontsize=8)
-    ax2.text(i,r.connectly,f"₹{r.connectly:,.0f}",ha='center',va='bottom',color="#ffb703",fontsize=8)
-ax2.set_xticks(range(len(cost)));ax2.set_xticklabels(cost.label,rotation=45);ax2.legend();ax2.set_title("Monthly Cost")
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor=BG)
+x, w = range(len(monthly)), .35
+ax1.bar([i - w / 2 for i in x], monthly.sent, w, color="#00b4d8")
+ax1.bar([i + w / 2 for i in x], monthly.delivered, w, color="#ffb703")
+for i, r in monthly.iterrows():
+    ax1.text(i - w / 2, r.sent, f"{r.sent / 1e6:.1f}M", ha='center', va='bottom', fontsize=8)
+    ax1.text(i + w / 2, r.delivered, f"{r.rate:.0f}%", ha='center', va='bottom', fontsize=8)
+ax1.set_xticks(x)
+ax1.set_xticklabels(monthly.label, rotation=45)
+ax1.set_title("Sent vs Delivered")
+ax2.plot(range(len(cost)), cost.meta, marker="o", color="#00b4d8", label="Meta cost")
+ax2.plot(range(len(cost)), cost.connectly, marker="o", color="#ffb703", label="Connectly cost")
+for i, r in cost.iterrows():
+    ax2.text(i, r.meta, f"₹{r.meta:,.0f}", ha='center', va='bottom', color="#00b4d8", fontsize=8)
+    ax2.text(i, r.connectly, f"₹{r.connectly:,.0f}", ha='center', va='bottom', color="#ffb703", fontsize=8)
+ax2.set_xticks(range(len(cost)))
+ax2.set_xticklabels(cost.label, rotation=45)
+ax2.legend()
+ax2.set_title("Monthly Cost")
 st.pyplot(fig)
 del monthly, cost, fig; gc.collect()
 
-# ═════════════════════════ SECTION 2 – Date filters ══════════════════════════
-c1,c2=st.columns(2)
-sd=c1.date_input("Start date",MAX_D-datetime.timedelta(days=30),min_value=MIN_D,max_value=MAX_D)
-ed=c2.date_input("End date",MAX_D,min_value=MIN_D,max_value=MAX_D)
+# ════════════════════ SECTION 2 – Date Filter UI ═════════════════
+c1, c2 = st.columns(2)
+sd = c1.date_input("Start date", MAX_D - datetime.timedelta(days=30), min_value=MIN_D, max_value=MAX_D)
+ed = c2.date_input("End date", MAX_D, min_value=MIN_D, max_value=MAX_D)
 
 # ═════════════════════════ SECTION 3 – Funnel by product ═════════════════════
 @st.cache_data(ttl=900)
