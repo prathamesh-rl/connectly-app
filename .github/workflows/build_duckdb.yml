@@ -1,0 +1,32 @@
+name: Build compact DuckDB
+
+on:
+  schedule:
+    - cron: "30 0 * * *"        # nightly 00:30 UTC
+  workflow_dispatch:            # run manually from Actions tab
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true             # pull LFS objects & enable hooks
+
+      - name: Build connectly.duckdb
+        run: |
+          pip install duckdb
+          duckdb connectly.duckdb <<'SQL'
+          CREATE OR REPLACE TABLE camp AS
+            SELECT * FROM read_parquet('parquet_trim/**/*.parquet', union_by_name=true);
+          CREATE OR REPLACE TABLE act AS
+            SELECT * FROM read_parquet('activity_chunks/**/*.parquet', union_by_name=true);
+          SQL
+
+      - name: Commit DB
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add connectly.duckdb
+          git commit -m "CI: refresh compact DB" || echo "No changes"
+          git push
