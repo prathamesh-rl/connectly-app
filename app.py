@@ -1,11 +1,11 @@
 # -----------------------------------------------------------------
 #  Connectly Messaging Dashboard · lean SQL build  (Jun-2025)
-#  – size-threshold relaxed (64 B) + debug counts        18-Jun-25
+#  – Fixes corrupt-file crash & COALESCE type mix       18-Jun-2025
 # -----------------------------------------------------------------
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt, matplotlib.style as style
 import datetime, glob, textwrap, pathlib, os
 
-# ─── theme & page ────────────────────────────────────────────────
+# ─── theme & page ─────────────────────────────────────────────────
 style.use("dark_background")
 BG, TXT = "#0e1117", "#d3d3d3"
 plt.rcParams.update({"text.color": TXT, "axes.edgecolor": TXT, "axes.labelcolor": TXT})
@@ -17,7 +17,6 @@ st.title("📊 Connectly Messaging Dashboard")
 ROOT = pathlib.Path(__file__).resolve().parent
 _abs  = lambda p: (ROOT / p).as_posix()
 
-# patterns exactly as before (no shard logic) ---------------------
 PAT_CAM = (
     _abs("parquet_trim/dispatch_date=*/data_0.parquet"),
     _abs("parquet_trim/msg_*.parquet"),
@@ -36,64 +35,63 @@ con = duckdb.connect()
 qdf = lambda sql: con.sql(textwrap.dedent(sql)).df()
 
 # ─── file-sanity helper ──────────────────────────────────────────
-def _good_files(pattern: str, *, min_bytes=64):                 # ← now 64 B
-    ok, bad = [], 0
+def _good_files(pattern: str, *, min_bytes=64):
+    """Return list of parquet paths that are non-empty & readable."""
+    good = []
     for p in glob.glob(pattern):
         try:
             if os.path.getsize(p) < min_bytes:
-                bad += 1
                 continue
-            con.execute("PRAGMA parquet_metadata(?)", [p])      # quick probe
-            ok.append(pathlib.Path(p).as_posix())
+            con.execute("PRAGMA parquet_metadata(?)", [p])  # quick probe
+            good.append(pathlib.Path(p).as_posix())
         except Exception:
-            bad += 1
-    return ok, bad
+            continue
+    return good
 
 def _first_good(pats):
     for pat in pats:
-        ok, bad = _good_files(pat)
-        if ok:
-            return ok, bad
-    return [], 0
+        g = _good_files(pat)
+        if g:
+            return g
+    return []
 
-FILES_CAM, BAD_CAM = _first_good(PAT_CAM)
-FILES_ACT, BAD_ACT = _first_good(PAT_ACT)
+FILES_CAM = _first_good(PAT_CAM)
+FILES_ACT = _first_good(PAT_ACT)
 
 if not FILES_CAM:
-    st.error("❌ No readable campaign Parquet files found. Double-check paths.")
+    st.error("❌ No readable campaign Parquet files found. Check repo paths.")
     st.stop()
 
-# optional debug sidebar
-if st.sidebar.checkbox("🔍 show debug"):
+list_literal = lambda L: "[" + ", ".join(f"'{x}'" for x in L) + "]"
+scan_c = f"read_parquet({list_literal(FILES_CAM)}, union_by_name=true)"
+scan_a = f"read_parquet({list_literal(FILES_ACT)}, union_by_name=true)" if FILES_ACT else None
+
+# ─── activity view (cast phones to VARCHAR) ──────────────────────
+if scan_a:
+    cols = [r[0] for r in con.execute(f"PRAGMA describe({scan_a})").fetchall()]
+    phone_fields = [c for c in ("guardian_phone","moderator_phone","user_phone") if c in cols] or ["user_phone"]
+    coalesce_expr = ", ".join(f"CAST({c} AS VARCHAR)" for c in phone_fields)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP VIEW act_src AS
+        SELECT COALESCE({coalesce_expr})        AS user,
+               CAST(activity_date AS DATE)      AS activity_date
+        FROM {scan_a};
+    """)
+else:
+    con.execute("CREATE OR REPLACE TEMP VIEW act_src AS SELECT NULL AS user, NULL::DATE AS activity_date LIMIT 0;")
+
+# ─── debug toggle ────────────────────────────────────────────────
+SHOW_DEBUG = st.sidebar.checkbox("🔍 show debug")
+if SHOW_DEBUG:
     st.sidebar.write({
-        "campaign_ok" : len(FILES_CAM), "campaign_bad" : BAD_CAM,
-        "activity_ok" : len(FILES_ACT), "activity_bad" : BAD_ACT,
+        "campaign_files": len(FILES_CAM),
+        "activity_files": len(FILES_ACT),
         "first_campaign": FILES_CAM[0] if FILES_CAM else None,
         "first_activity": FILES_ACT[0] if FILES_ACT else None,
     })
 
-# ─── DuckDB table scans ─────────────────────────────────────────
-lit = lambda L: "[" + ", ".join(f"'{x}'" for x in L) + "]"
-scan_c = f"read_parquet({lit(FILES_CAM)}, union_by_name=true)"
-scan_a = f"read_parquet({lit(FILES_ACT)}, union_by_name=true)" if FILES_ACT else None
-
-# ─── activity view (cast phones to VARCHAR to avoid type mixing) ─
-if scan_a:
-    cols = [r[0] for r in con.execute(f"PRAGMA describe({scan_a})").fetchall()]
-    phones = [c for c in ("guardian_phone","moderator_phone","user_phone") if c in cols] or ["user_phone"]
-    coalesce = ", ".join(f"CAST({c} AS VARCHAR)" for c in phones)
-    con.execute(f"""
-        CREATE OR REPLACE TEMP VIEW act_src AS
-        SELECT COALESCE({coalesce})        AS user,
-               CAST(activity_date AS DATE) AS activity_date
-        FROM {scan_a};
-    """)
-else:
-    con.execute("CREATE OR REPLACE TEMP VIEW act_src AS "
-                "SELECT NULL AS user, NULL::DATE AS activity_date LIMIT 0;")
-
 # ════════════════════════════════════════════════════════════════
-#  SECTION 1 · Monthly Messaging & Cost Overview (no filters)
+#  SECTION 1 · Monthly Messaging & Cost Overview
 # ════════════════════════════════════════════════════════════════
 monthly = qdf(f"""
     SELECT DATE_TRUNC('month', CAST(dispatched_at AS TIMESTAMP))::DATE AS m,
@@ -102,7 +100,8 @@ monthly = qdf(f"""
            COUNT(DISTINCT CASE WHEN delivered IS NOT NULL
                  THEN customer_external_id||'_'||
                       CAST(dispatched_at::DATE AS VARCHAR) END)        AS delivered
-    FROM {scan_c} GROUP BY 1 ORDER BY 1;
+    FROM {scan_c}
+    GROUP BY 1 ORDER BY 1;
 """)
 monthly["label"] = pd.to_datetime(monthly.m).dt.strftime("%b %y")
 monthly["rate"]  = (monthly.delivered / monthly.sent * 100).round(1)
@@ -111,7 +110,7 @@ cost = monthly[["m","delivered"]].copy()
 d    = cost.delivered
 cost["label"]     = pd.to_datetime(cost.m).dt.strftime("%b %y")
 cost["meta"]      = (d*0.96*0.0107 + d*0.04*0.0014).round(0)
-cost["connectly"] = (d*0.9 *0.0123 + 500).round(0)
+cost["connectly"] = (d*0.90*0.0123 + 500).round(0)
 
 st.subheader("📈 Monthly Messaging & Cost Overview")
 fig,(ax1,ax2)=plt.subplots(1,2,figsize=(12,4),facecolor=BG)
@@ -131,35 +130,33 @@ for i,r in cost.iterrows():
     ax2.text(i, r.meta,      f"₹{r.meta:,.0f}", ha='center', va='bottom', color="#00b4d8", fontsize=8)
     ax2.text(i, r.connectly, f"₹{r.connectly:,.0f}", ha='center', va='bottom', color="#ffb703", fontsize=8)
 ax2.set_xticks(x2); ax2.set_xticklabels(cost.label, rotation=45); ax2.set_title("Monthly Cost"); ax2.legend()
+
 st.pyplot(fig)
 
 # ════════════════════════════════════════════════════════════════
-#  SECTION 2 · Date range filters
+#  SECTION 2 · Date range filter
 # ════════════════════════════════════════════════════════════════
 c1,c2 = st.columns(2)
-sd = c1.date_input("Start date", MAX_D - datetime.timedelta(days=30),
-                   min_value=MIN_D, max_value=MAX_D)
-ed = c2.date_input("End date",   MAX_D,
-                   min_value=MIN_D, max_value=MAX_D)
+sd = c1.date_input("Start date", MAX_D - datetime.timedelta(days=30), min_value=MIN_D, max_value=MAX_D)
+ed = c2.date_input("End date",   MAX_D,                                min_value=MIN_D, max_value=MAX_D)
 
 # ════════════════════════════════════════════════════════════════
-#  SECTION 3 · Funnel by Product (ignores 'Unknown')
+#  SECTION 3 · Funnel by Product
 # ════════════════════════════════════════════════════════════════
 funnel = qdf(f"""
 WITH msgs AS (
   SELECT COALESCE(product,'Unknown')                    AS product,
          customer_external_id                           AS user,
-         CAST(dispatched_at AS DATE)                    AS d,
-         MIN(delivered)                                 AS first_deliv,
+         MIN(delivered)                                 AS deliv,
          MIN(CASE WHEN button_responses>0 OR link_clicks>0 THEN 1 END) AS clicked
   FROM {scan_c} LEFT JOIN read_parquet('{MAP_FILE}') USING (business_id)
   WHERE dispatched_at::DATE BETWEEN '{sd}' AND '{ed}'
-  GROUP BY 1,2,3
+  GROUP BY 1,2
 ), agg AS (
   SELECT product,
-         COUNT(DISTINCT user)                                                    AS sent,
-         COUNT(DISTINCT CASE WHEN first_deliv IS NOT NULL THEN user END)         AS delivered,
-         COUNT(DISTINCT CASE WHEN clicked=1 THEN user END)                       AS clicked
+         COUNT(DISTINCT user)                                         AS sent,
+         COUNT(DISTINCT CASE WHEN deliv IS NOT NULL THEN user END)    AS delivered,
+         COUNT(DISTINCT CASE WHEN clicked=1 THEN user END)            AS clicked
   FROM msgs GROUP BY 1
 )
 SELECT product,
@@ -180,7 +177,7 @@ st.dataframe(funnel.style.format({"delivery_rate":"{:.1f}%","click_rate":"{:.1f}
              use_container_width=True)
 
 # ════════════════════════════════════════════════════════════════
-#  SECTION 4 · Product filter (affects downstream charts)
+#  SECTION 4 · Product filter (affects charts below)
 # ════════════════════════════════════════════════════════════════
 prod_opts = funnel.product[funnel.product!="Total"].tolist()
 sel_prod  = st.multiselect("Filter products (affects charts below)",
@@ -217,8 +214,8 @@ camp = qdf(f"""
 WITH msgs AS (
   SELECT sendout_name,
          customer_external_id AS user,
-         button_responses+link_clicks                       AS clicks,
-         delivered IS NOT NULL                              AS is_delivered
+         button_responses + link_clicks                       AS clicks,
+         delivered IS NOT NULL                                AS is_delivered
   FROM {scan_c} LEFT JOIN read_parquet('{MAP_FILE}') USING (business_id)
   WHERE dispatched_at::DATE BETWEEN '{sd}' AND '{ed}' {prod_clause}
 )
@@ -233,4 +230,5 @@ st.subheader("📋 Campaign Performance")
 st.dataframe(camp.style.format({"click_rate":"{:.1f}%","pct_of_total":"{:.1f}%"}),
              use_container_width=True)
 
+# ════════════════════════════════════════════════════════════════
 st.caption("© 2025 Rocket Learning • Connectly internal dashboard")
