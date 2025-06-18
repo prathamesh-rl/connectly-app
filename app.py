@@ -367,5 +367,3 @@ perf_df = con.execute(perf_sql).df()
 st.subheader("📈 Campaign Performance")
 
 st.dataframe(perf_df, hide_index=True)
-
-
