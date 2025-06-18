@@ -8,10 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write  # Required to push .duckdb file back to repo
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -26,16 +22,15 @@ jobs:
 
       - name: Build DuckDB from parquet
         run: |
-          python <<EOF
+          python - <<'PY'
           import duckdb, glob, pathlib
-          from itertools import chain
 
           con = duckdb.connect("connectly.duckdb")
           print("▶ Building compact DuckDB")
 
-          # Campaign files
+          # Campaign files: dispatch info (message logs)
           camp_paths = glob.glob("parquet_trim/dispatch_date=*/data_0.parquet")
-          con.execute(f'''
+          con.execute(f"""
             CREATE OR REPLACE TABLE camp AS
             SELECT
               dispatched_at,
@@ -43,23 +38,20 @@ jobs:
               sendout_name,
               customer_external_id
             FROM read_parquet({[str(pathlib.Path(p)) for p in camp_paths]}, union_by_name=True)
-          ''')
+          """)
 
-          # Activity files
+          # Activity files: user_phone already derived
           act_paths = glob.glob("activity_chunks/activity_data_*.parquet")
-          con.execute(f'''
+          con.execute(f"""
             CREATE OR REPLACE TABLE act AS
             SELECT
               activity_date,
               grp_id,
               product,
-              COALESCE(
-                CASE WHEN product = 'PP' THEN CAST(guardian_phone AS VARCHAR) END,
-                CASE WHEN product = 'TP' THEN CAST(moderator_phone AS VARCHAR) END
-              ) AS user_phone
+              user_phone
             FROM read_parquet({[str(pathlib.Path(p)) for p in act_paths]}, union_by_name=True)
-          ''')
-          EOF
+          """)
+          PY
 
       - name: Commit DB file
         run: |
@@ -68,3 +60,5 @@ jobs:
           git add connectly.duckdb
           git commit -m "CI: refresh compact DB" || echo "No changes to commit"
           git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
