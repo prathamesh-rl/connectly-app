@@ -2,8 +2,8 @@ name: Build compact DuckDB
 
 on:
   schedule:
-    - cron: "30 0 * * *"        # nightly 00:30 UTC
-  workflow_dispatch:            # run manually from Actions tab
+    - cron: "30 0 * * *"          # nightly
+  workflow_dispatch:
 
 jobs:
   build:
@@ -11,17 +11,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true             # pull LFS objects & enable hooks
+          lfs: true
 
-      - name: Build connectly.duckdb
+      - name: Build connectly.duckdb via Python
         run: |
           pip install duckdb
-          duckdb connectly.duckdb <<'SQL'
-          CREATE OR REPLACE TABLE camp AS
-            SELECT * FROM read_parquet('parquet_trim/**/*.parquet', union_by_name=true);
-          CREATE OR REPLACE TABLE act AS
-            SELECT * FROM read_parquet('activity_chunks/**/*.parquet', union_by_name=true);
-          SQL
+          python - <<'PY'
+          import duckdb, glob, pathlib, itertools, os
+          con = duckdb.connect("connectly.duckdb")
+          print("▶ building camp table...")
+          camp_files = list(itertools.chain.from_iterable(
+              glob.glob(p) for p in [
+                  "parquet_trim/dispatch_date=*/data_0.parquet",
+                  "parquet_trim/msg_*.parquet",
+                  "parquet_output/dispatch_date=*/data_0*.parquet",
+              ]))
+          con.execute(f"""
+            CREATE OR REPLACE TABLE camp AS
+            SELECT * FROM read_parquet(
+              [{', '.join(repr(pathlib.Path(f).as_posix()) for f in camp_files)}],
+              union_by_name=true
+            );
+          """)
+          print("▶ building act table...")
+          act_files = list(itertools.chain.from_iterable(
+              glob.glob(p) for p in [
+                  "activity_trim/act_*.parquet",
+                  "activity_chunks/activity_data_*.parquet",
+              ]))
+          if act_files:
+              con.execute(f"""
+                CREATE OR REPLACE TABLE act AS
+                SELECT * FROM read_parquet(
+                  [{', '.join(repr(pathlib.Path(f).as_posix()) for f in act_files)}],
+                  union_by_name=true
+                );
+              """)
+          else:
+              con.execute("CREATE OR REPLACE TABLE act(user VARCHAR, activity_date DATE);")
+          con.close()
+          print("✅ connectly.duckdb built")
+          PY
 
       - name: Commit DB
         run: |
