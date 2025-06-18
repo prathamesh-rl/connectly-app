@@ -1,69 +1,70 @@
-name: Build compact DuckDB via Python
+name: Build connectly.duckdb via Python
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'  # every day at 3AM UTC
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    steps:
 
+    permissions:
+      contents: write  # Required to push .duckdb file back to repo
+
+    steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install DuckDB
-        run: |
-          python -m pip install duckdb
+        run: pip install duckdb
 
       - name: Build DuckDB from parquet
         run: |
-          python - <<'PY'
+          python <<EOF
           import duckdb, glob, pathlib
-          print("▶ Building compact DuckDB")
+          from itertools import chain
 
           con = duckdb.connect("connectly.duckdb")
+          print("▶ Building compact DuckDB")
 
-          # Campaign files (minimal columns only)
-          con.execute("""
-          CREATE OR REPLACE TABLE camp AS
-          SELECT 
-            customer_external_id,
-            dispatched_at,
-            delivered,
-            button_responses,
-            link_clicks,
-            business_id,
-            sendout_name
-          FROM read_parquet(
-            ['parquet_trim/dispatch_date=*/data_0.parquet',
-             'parquet_trim/msg_*.parquet',
-             'parquet_output/dispatch_date=*/data_0*.parquet'],
-            union_by_name = true
-          )
-          """)
+          # Campaign files
+          camp_paths = glob.glob("parquet_trim/dispatch_date=*/data_0.parquet")
+          con.execute(f'''
+            CREATE OR REPLACE TABLE camp AS
+            SELECT
+              dispatched_at,
+              delivered,
+              sendout_name,
+              customer_external_id
+            FROM read_parquet({[str(pathlib.Path(p)) for p in camp_paths]}, union_by_name=True)
+          ''')
 
-          # Activity files with user_phone logic
-          act_files = glob.glob("activity_chunks/activity_data_*.parquet")
-          con.execute(f"""
-          CREATE OR REPLACE TABLE act AS
-          SELECT 
-            CASE
-              WHEN product = 'PP' THEN CAST(guardian_phone AS VARCHAR)
-              WHEN product = 'TP' THEN CAST(moderator_phone AS VARCHAR)
-              ELSE NULL
-            END AS user_phone,
-            activity_date
-          FROM read_parquet(
-            [{','.join(repr(str(pathlib.Path(p))) for p in act_files)}],
-            union_by_name = true
-          )
-          """)
-          PY
+          # Activity files
+          act_paths = glob.glob("activity_chunks/activity_data_*.parquet")
+          con.execute(f'''
+            CREATE OR REPLACE TABLE act AS
+            SELECT
+              activity_date,
+              grp_id,
+              product,
+              COALESCE(
+                CASE WHEN product = 'PP' THEN CAST(guardian_phone AS VARCHAR) END,
+                CASE WHEN product = 'TP' THEN CAST(moderator_phone AS VARCHAR) END
+              ) AS user_phone
+            FROM read_parquet({[str(pathlib.Path(p)) for p in act_paths]}, union_by_name=True)
+          ''')
+          EOF
 
       - name: Commit DB file
         run: |
-          git config user.name  "github-actions"
-          git config user.email "actions@github.com"
+          git config user.name github-actions
+          git config user.email github-actions@github.com
           git add connectly.duckdb
           git commit -m "CI: refresh compact DB" || echo "No changes to commit"
           git push
