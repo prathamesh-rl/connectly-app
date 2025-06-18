@@ -1,10 +1,9 @@
 # -----------------------------------------------------------------
 #  Connectly Messaging Dashboard · low-memory + multi-user build
-# -----------------------------------------------------------------
-#  ▸ One DuckDB connection per browser session → thread-safe
-#  ▸ PRAGMA memory_limit keeps RAM < ~700 MB (Cloud limit is 1 GB)
-#  ▸ Heavy SQL blocks wrapped in @st.cache_data(ttl=900)
-#  ▸ Column projection so DuckDB only reads used columns
+#  • One DuckDB connection per browser session (@st.cache_resource)
+#  • PRAGMA memory_limit keeps RAM < 700 MB (Cloud cap ≈ 1 GB)
+#  • Heavy queries cached 15 min (@st.cache_data)
+#  • Column projection so DuckDB reads only needed columns
 # -----------------------------------------------------------------
 import streamlit as st, duckdb, pandas as pd
 import matplotlib.pyplot as plt, matplotlib.style as style
@@ -53,7 +52,7 @@ qdf = lambda q: con.sql(textwrap.dedent(q)).df()
 
 # ─── activity view (schema-adaptive) -----------------------------
 if scan_a:
-    cols = [r[0] for r in con.execute(f"PRAGMA describe({scan_a})").fetchall()]
+    cols = [r[1] for r in con.execute(f"PRAGMA table_info({scan_a})").fetchall()]
     phones = [c for c in ("guardian_phone","moderator_phone","user_phone") if c in cols] or ["user_phone"]
     casted = ", ".join(f"CAST({c} AS VARCHAR)" for c in phones)
     con.execute(f"""
