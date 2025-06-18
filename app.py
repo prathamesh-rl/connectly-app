@@ -132,7 +132,7 @@ st.subheader("📦 Funnel by Product")
 st.dataframe(funnel,use_container_width=True)
 
 # ─── product picker (applies below) ─────────────────────────────
-prod_df=qdf(f"""
+prod_df = qdf(f"""
 SELECT DISTINCT mp.product
 FROM {scan_c} m
 LEFT JOIN parquet_scan('{MAP_FILE}') mp
@@ -140,9 +140,14 @@ LEFT JOIN parquet_scan('{MAP_FILE}') mp
 WHERE dispatched_at::DATE BETWEEN DATE '{sd}' AND DATE '{ed}'
   AND mp.product IS NOT NULL
 """)
-products=sorted(prod_df.product.tolist())
-prod_sel=st.selectbox("Product filter (for Activity & Campaign)",["All"]+products)
-prod_filter = "" if prod_sel=="All" else f"AND mp.product = '{prod_sel}'"
+
+# ⬇️  FIX — use ['product'] not .product
+products = sorted(prod_df["product"].tolist()) if not prod_df.empty else []
+prod_sel = st.selectbox(
+    "Product filter (for Activity & Campaign)",
+    ["All"] + products
+)
+prod_filter = "" if prod_sel == "All" else f"AND mp.product = '{prod_sel}'"
 
 # ─── messages window (filtered) ─────────────────────────────────
 msgs = qdf(f"""
