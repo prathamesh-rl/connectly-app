@@ -173,6 +173,12 @@ LEFT JOIN summary s
 USING(month, product, sendout_name);
 """)
 
+con.execute("DROP TABLE IF EXISTS camp_raw;")
+con.execute("DROP TABLE IF EXISTS camp;")
+con.execute("DROP TABLE IF EXISTS act;")
+con.execute("DROP TABLE IF EXISTS product_map;")
+
+
 con.close()
 print(f"✅ Built {OUT_DB} successfully")
 
