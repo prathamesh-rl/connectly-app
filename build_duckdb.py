@@ -1,65 +1,35 @@
-# ------------------------------------------------------------------
-# build_duckdb.py · Pre-computes all analytics into connectly_slim.db
-# ------------------------------------------------------------------
-"""
-Run locally or in a GitHub Action:
-
-    python build_duckdb.py
-"""
-
 import duckdb, os
 
 RAW_CAMP = "parquet_trim/dispatch_date=*/data_0.parquet"
 RAW_ACT  = "activity_chunks/activity_data_*.parquet"
-MAP_FILE = "business_product_map.parquet"   # adjust if needed
 OUT_DB   = "connectly_slim.duckdb"
 
-# ── (re)create slim DB ────────────────────────────────────────────
 if os.path.exists(OUT_DB):
     os.remove(OUT_DB)
 con = duckdb.connect(OUT_DB)
 
-# 1️⃣ Campaigns  ----------------------------------------------------
+# ── 1. Campaign data ─────────────────────────────────────────────
 con.execute(f"""
-CREATE TABLE camp_raw AS
-SELECT
-    sendout_name,
-    business_id,
-    customer_external_id            AS user,
-    CAST(dispatched_at AS TIMESTAMP) AS dispatched_at,
-    delivered::BOOLEAN              AS delivered,
-    button_responses::INT           AS button_responses,
-    link_clicks::INT                AS link_clicks
-FROM read_parquet('{RAW_CAMP}');
-""")
-
-con.execute(f"""
-CREATE TABLE product_map AS
-SELECT business_id, product
-FROM read_parquet('{MAP_FILE}');
-""")
-
-con.execute("""
 CREATE TABLE camp AS
 SELECT
-    DATE_TRUNC('month', dispatched_at)::DATE          AS month,
-    COALESCE(pm.product,'Unknown')                    AS product,
+    DATE_TRUNC('month', CAST(dispatched_at AS TIMESTAMP))::DATE AS month,
+    business_id,
+    customer_external_id               AS user,
     sendout_name,
-    user,
-    delivered,
-    button_responses + link_clicks                    AS clicks
-FROM camp_raw
-LEFT JOIN product_map pm USING (business_id);
+    CAST(delivered IS NOT NULL AS BOOLEAN)       AS delivered,
+    TRY_CAST(button_responses AS INTEGER) + TRY_CAST(link_clicks AS INTEGER) AS clicks
+FROM read_parquet('{RAW_CAMP}')
+WHERE dispatched_at IS NOT NULL;
 """)
 
-# 2️⃣ Activity  -----------------------------------------------------
+# ── 2. Activity data ─────────────────────────────────────────────
 con.execute(f"""
 CREATE TABLE act AS
 SELECT
     user_phone                              AS user,
+    product,
     CAST(activity_date AS DATE)             AS activity_date,
-    DATE_TRUNC('month', activity_date)::DATE AS month,
-    product
+    DATE_TRUNC('month', activity_date)::DATE AS month
 FROM read_parquet('{RAW_ACT}');
 """)
 
