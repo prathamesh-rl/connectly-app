@@ -46,30 +46,36 @@ except:
     monthly["sent_total"] = monthly.sent
 
 st.subheader("📈 Monthly Messaging & Cost Overview")
+
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor=BG)
-
 x = range(len(monthly))
-w = 0.35
 
-# Sent vs Delivered bar chart
-ax1.bar([i - w/2 for i in x], monthly.sent_total, w, color="#00b4d8", label="Total Sent")
-ax1.bar([i + w/2 for i in x], monthly.delivered, w, color="#ffb703", label="Delivered")
-for i, r in monthly.iterrows():
-    ax1.text(i - w/2, r.sent_total, f"{int(r.sent_total/1e6)}M", ha='center', va='bottom', fontsize=8)
-    ax1.text(i + w/2, r.delivered, f"{int(r.delivery_rate)}%", ha='center', va='bottom', fontsize=8)
-ax1.set_xticks(list(x)); ax1.set_xticklabels(monthly.label, rotation=45); ax1.set_title("Sent vs Delivered")
+# Only Delivered bar chart
+bar = ax1.bar(x, monthly.delivered, width=0.5, color="#ffb703", label="Delivered")
+for i, r in enumerate(monthly.delivered):
+    ax1.text(i, r, f"{int(r/1e6)}M", ha='center', va='bottom', fontsize=8)
+
+ax1.set_xticks(x)
+ax1.set_xticklabels(monthly.label, rotation=45)
+ax1.set_title("Delivered Messages")
 ax1.legend()
 
-# Cost line chart
+# Meta cost below Connectly cost with $ labels
 ax2.plot(x, monthly.meta_cost, marker="o", label="Meta $", color="#90e0ef")
 ax2.plot(x, monthly.connectly_cost, marker="o", label="Connectly $", color="#f4f1bb")
-for i, r in monthly.iterrows():
-    ax2.text(i, r.meta_cost, f"${int(r.meta_cost)}", ha='center', va='bottom', fontsize=8)
-    ax2.text(i, r.connectly_cost, f"${int(r.connectly_cost)}", ha='center', va='bottom', fontsize=8)
-ax2.set_xticks(list(x)); ax2.set_xticklabels(monthly.label, rotation=45)
-ax2.set_title("Monthly Cost"); ax2.legend()
 
-st.pyplot(fig); del monthly, fig; gc.collect()
+for i in x:
+    ax2.text(i, monthly.meta_cost[i], f"${monthly.meta_cost[i]:,.0f}", ha='center', va='bottom', fontsize=8)
+    ax2.text(i, monthly.connectly_cost[i], f"${monthly.connectly_cost[i]:,.0f}", ha='center', va='bottom', fontsize=8)
+
+ax2.set_xticks(x)
+ax2.set_xticklabels(monthly.label, rotation=45)
+ax2.set_title("Monthly Cost")
+ax2.legend()
+
+st.pyplot(fig)
+del monthly, fig
+gc.collect()
 
 # ─── Filters (Placed below Graph) ──────────────────────────────
 months_df = qdf("SELECT DISTINCT month FROM connectly_slim_new.funnel_by_product ORDER BY month")
