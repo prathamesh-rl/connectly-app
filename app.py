@@ -33,96 +33,82 @@ delivered_map = {
     "2025-06-01": 2517590
 }
 monthly["delivered"] = monthly.month.astype(str).map(delivered_map).fillna(0).astype(int)
-monthly["delivery_rate"] = (monthly.delivered / monthly.sent * 100).round(1)
 monthly["meta_cost"] = (monthly.delivered * 0.96 * 0.0107 + monthly.delivered * 0.04 * 0.0014).round()
 monthly["connectly_cost"] = (monthly.delivered * 0.90 * 0.0123 + 500).round()
 
-# Try loading sent_total if exists
 try:
     sent_total = qdf("SELECT * FROM connectly_slim_new.monthly_sent_total ORDER BY month")
     sent_total_dict = dict(zip(sent_total.month.astype(str), sent_total.total_sent))
-    monthly["sent_total"] = monthly.month.astype(str).map(sent_total_dict).fillna(monthly.sent)
+    monthly["sent_total"] = monthly.month.astype(str).map(sent_total_dict).fillna(monthly.delivered)
 except:
-    monthly["sent_total"] = monthly.sent
+    monthly["sent_total"] = monthly.delivered
 
 st.subheader("📈 Monthly Messaging & Cost Overview")
-
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor=BG)
 x = range(len(monthly))
 
-# Only Delivered bar chart
-bar = ax1.bar(x, monthly.delivered, width=0.5, color="#ffb703", label="Delivered")
+bars = ax1.bar(x, monthly.delivered, width=0.5, color="#ffb703", label="Delivered")
 for i, r in enumerate(monthly.delivered):
-    ax1.text(i, r, f"{int(r/1e6)}M", ha='center', va='bottom', fontsize=8)
-
+    ax1.text(i, r, f"{r/1e6:.1f}M", ha='center', va='bottom', fontsize=8)
 ax1.set_xticks(x)
 ax1.set_xticklabels(monthly.label, rotation=45)
 ax1.set_title("Delivered Messages")
 ax1.legend()
 
-# Meta cost below Connectly cost with $ labels
 ax2.plot(x, monthly.meta_cost, marker="o", label="Meta $", color="#90e0ef")
 ax2.plot(x, monthly.connectly_cost, marker="o", label="Connectly $", color="#f4f1bb")
-
 for i in x:
     ax2.text(i, monthly.meta_cost[i], f"${monthly.meta_cost[i]:,.0f}", ha='center', va='bottom', fontsize=8)
     ax2.text(i, monthly.connectly_cost[i], f"${monthly.connectly_cost[i]:,.0f}", ha='center', va='bottom', fontsize=8)
-
 ax2.set_xticks(x)
 ax2.set_xticklabels(monthly.label, rotation=45)
 ax2.set_title("Monthly Cost")
 ax2.legend()
-
 st.pyplot(fig)
 del monthly, fig
 gc.collect()
 
-# ─── Filters (Placed below Graph) ──────────────────────────────
+# ─── Filters (Below Graphs) ────────────────────────────────────
 months_df = qdf("SELECT DISTINCT month FROM connectly_slim_new.funnel_by_product ORDER BY month")
 products_df = qdf("SELECT DISTINCT product FROM connectly_slim_new.funnel_by_product ORDER BY product")
-
 months = months_df["month"].tolist()
 month_labels = pd.to_datetime(months).strftime("%b %Y").tolist()
 products = products_df["product"].tolist()
-
 c1, c2 = st.columns(2)
 sel_months = c1.multiselect("📅 Months", month_labels, default=["May 2025"])
-sel_products = c2.multiselect("🛍️ Products", products, default=products, label_visibility="visible")
-
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
 month_clause = "month IN ({})".format(", ".join([f"DATE '{d}'" for d in sel_month_dates]))
-prod_clause = "product IN ({})".format(", ".join([repr(p) for p in sel_products]))
 
 # ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
     SELECT product,
            SUM(sent)::INT AS sent,
            SUM(delivered)::INT AS delivered,
-           ROUND(SUM(clicked)*100.0/SUM(sent),1) AS click_rate
+           ROUND(SUM(delivered)*100.0/SUM(sent), 1) AS delivery_rate
     FROM connectly_slim_new.funnel_by_product
-    WHERE {month_clause} AND {prod_clause}
+    WHERE {month_clause}
     GROUP BY 1 ORDER BY sent DESC
 """)
 total = funnel[["sent", "delivered"]].sum().to_frame().T
-total["click_rate"] = (funnel["click_rate"] * funnel["sent"]).sum() / funnel["sent"].sum()
+total["delivery_rate"] = (funnel["delivered"].sum() * 100.0 / funnel["sent"].sum()).round(1)
 total.insert(0, "product", "Total")
 funnel = pd.concat([funnel, total], ignore_index=True)
 
 st.subheader("🪜 Funnel by Product")
 st.dataframe(
-    funnel.style.format({
-        "sent": "{:,.0f}",
-        "delivered": "{:,.0f}",
-        "click_rate": "{:.1f}%"
-    }).map(lambda v: "background-color: #222" if v == "Total" else "", subset=pd.IndexSlice[funnel.index[-1:], :])
-
+    funnel.style
+        .format({"sent": "{:,.0f}", "delivered": "{:,.0f}", "delivery_rate": "{:.1f}%"})
+        .map(lambda v: "background-color: #222" if v == "Total" else "", subset=pd.IndexSlice[funnel.index[-1:], :])
 )
 
-# ─── Nudge vs Activity (layered bar) ────────────────────────────
+# ─── Product Filter (After Funnel) ─────────────────────────────
+sel_products = st.multiselect("🛍️ Products", products, default=products, label_visibility="visible")
+prod_clause = "product IN ({})".format(", ".join([repr(p) for p in sel_products]))
+
+# ─── Nudge Frequency × Activity ────────────────────────────────
 try:
     act = qdf(f"SELECT * FROM connectly_slim_new.nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
     if "activity" in act.columns and "freq_bucket" in act.columns:
-        month_count = len(sel_month_dates)
         agg = act.groupby(["activity", "freq_bucket"], as_index=False).agg({"users": "sum"})
         pivot = agg.pivot(index="activity", columns="freq_bucket", values="users").fillna(0)
         pivot = pivot[["low", "med", "high"]] if all(k in pivot.columns for k in ["low", "med", "high"]) else pivot
@@ -137,20 +123,24 @@ try:
         for i, col in enumerate(pivot.columns):
             ax.bar(pivot.index, pivot[col], label=labels[i], bottom=bottom, color=colors[i])
             bottom = pivot[col] if bottom is None else bottom + pivot[col]
-
-        ax.set_ylabel("Users"); ax.legend(title="Nudge Frequency")
-        st.pyplot(fig); del pivot, fig; gc.collect()
+        ax.set_ylabel("Users")
+        ax.legend(title="Nudge Frequency")
+        st.pyplot(fig)
+        del pivot, fig
+        gc.collect()
 except Exception as e:
     st.warning(f"⚠️ Could not load Nudge vs Activity chart: {e}")
 
-# ─── Campaign Performance Table ─────────────────────────────────
+# ─── Campaign Performance Table ────────────────────────────────
 campaigns = qdf(f"""
     SELECT sendout_name,
            SUM(sent)::INT AS sent,
            SUM(delivered)::INT AS delivered,
            ROUND(SUM(delivered)*100.0/SUM(sent),1) AS delivery_rate,
-           ROUND(SUM(clicks)*100.0/SUM(sent),1)    AS click_rate,
            ROUND(SUM(delivered)*0.96*0.0107 + SUM(delivered)*0.04*0.0014) AS cost,
+           ROUND(AVG(inactive_pct),1) AS "Inactive %",
+           ROUND(AVG(active_pct),1) AS "Active %",
+           ROUND(AVG(high_pct),1) AS "Highly Active %",
            ROUND(AVG(inactive_low),1) AS "Inactive: Low",
            ROUND(AVG(inactive_med),1) AS "Inactive: Med",
            ROUND(AVG(inactive_high),1) AS "Inactive: High",
@@ -168,12 +158,10 @@ campaigns = qdf(f"""
 st.subheader("🎯 Campaign Performance")
 st.dataframe(
     campaigns.style.format({
-        "delivery_rate": "{:.1f}%", "click_rate": "{:.1f}%", "cost": "${:,.0f}",
-        **{col: "{:.1f}%" for col in campaigns.columns if ":" in col}
+        "delivery_rate": "{:.1f}%", "cost": "${:,.0f}",
+        **{col: "{:.1f}%" for col in campaigns.columns if "%" in col or ":" in col}
     }),
-    use_container_width=True,
-    column_config={"sendout_name": "Sendout Name"}
-
+    use_container_width=True
 )
 
 st.caption("© 2025 Rocket Learning · Internal Dashboard")
