@@ -19,7 +19,7 @@ def get_con():
     con.execute("SET s3_region='auto'")
     con.execute("SET enable_object_cache=true")
     con.execute("""
-        ATTACH 'https://huggingface.co/datasets/prathamesh-rl/connectly-parquet/resolve/main/connectly_slim.duckdb'
+        ATTACH 'https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim.duckdb'
         AS conn (READ_ONLY)
     """)
     return con
