@@ -14,9 +14,12 @@ st.title("📊 Connectly Messaging Dashboard")
 # DuckDB connection -----------------------------------------------
 @st.cache_resource(show_spinner=False)
 def get_con():
-    con = duckdb.connect(database=':memory:', read_only=True)
+    con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
-    con.execute("ATTACH 'https://huggingface.co/datasets/prathamesh-rl/connectly-parquet/resolve/main/connectly_slim.duckdb' AS conn (READ_ONLY)")
+    con.execute("""
+        ATTACH 'https://huggingface.co/datasets/prathamesh-rl/connectly-parquet/resolve/main/connectly_slim.duckdb'
+        AS conn (READ_ONLY)
+    """)
     return con
 con = get_con()
 qdf = lambda q: con.sql(q).df()
