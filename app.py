@@ -71,7 +71,7 @@ sel_months = c1.multiselect("📅 Months", month_labels, default=["May 2025"])
 sel_products = c2.multiselect("🛍️ Products", products, default=products)
 
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
-month_clause = f"month IN ({', '.join(repr(d) for d in sel_month_dates)})"
+month_clause = f"""month IN ({', '.join([f"DATE '{d}'" for d in sel_month_dates])})"""
 prod_clause = f"product IN ({', '.join(repr(p) for p in sel_products)})"
 
 
