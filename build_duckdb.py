@@ -122,63 +122,58 @@ GROUP BY 1,2,3;
 # ─── 8. Campaign performance ───────────────────────────────────
 con.execute("""
 CREATE TABLE campaign_perf AS
-WITH base AS (
+WITH msgs AS (
     SELECT
-        month, product, sendout_name,
-        user,
-        delivered,
-        clicks
+        month, product, sendout_name, user, delivered, clicks
     FROM camp
 ),
-agg AS (
+activity_seg AS (
     SELECT
-        month, product, sendout_name,
-        COUNT(DISTINCT user)                         AS sent,
-        COUNT(DISTINCT CASE WHEN delivered THEN user END) AS delivered,
-        SUM(clicks)                                  AS clicks
-    FROM base
+        user,
+        month,
+        product,
+        COUNT(DISTINCT activity_date) AS days
+    FROM act
     GROUP BY 1,2,3
 ),
-seg AS (
+segmented AS (
     SELECT
-        b.month, b.product, b.sendout_name, b.user,
-        COUNT(DISTINCT a.activity_date) AS days
-    FROM base b
-    LEFT JOIN act a
-    ON b.user = a.user AND b.month = a.month AND b.product = a.product
-    GROUP BY 1,2,3,4
-),
-buckets AS (
-    SELECT
-        month, product, sendout_name,
-        CASE
-            WHEN COALESCE(days,0)=0 THEN 'inactive'
-            WHEN days BETWEEN 1 AND 10 THEN 'active'
-            ELSE 'high'
-        END AS bucket
-    FROM seg
-),
-summary AS (
-    SELECT
-        month, product, sendout_name,
-        ROUND(SUM(bucket='inactive') * 100.0 / COUNT(*),1) AS inactive_pct,
-        ROUND(SUM(bucket='active')   * 100.0 / COUNT(*),1) AS active_pct,
-        ROUND(SUM(bucket='high')     * 100.0 / COUNT(*),1) AS high_pct
-    FROM buckets
-    GROUP BY 1,2,3
+        m.month,
+        m.product,
+        m.sendout_name,
+        m.user,
+        m.delivered,
+        m.clicks,
+        COALESCE(a.days, 0) AS days
+    FROM msgs m
+    LEFT JOIN activity_seg a
+    ON m.user = a.user AND m.month = a.month AND m.product = a.product
 )
-SELECT a.*, s.inactive_pct, s.active_pct, s.high_pct
-FROM agg a
-LEFT JOIN summary s
-USING(month, product, sendout_name);
-""")
+SELECT
+    month,
+    product,
+    sendout_name,
+    COUNT(DISTINCT user) AS sent,
+    COUNT(DISTINCT CASE WHEN delivered THEN user END) AS delivered,
+    SUM(clicks) AS clicks,
+    ROUND(COUNT(*) FILTER (WHERE days = 0) * 100.0 / COUNT(*), 1) AS inactive_pct,
+    ROUND(COUNT(*) FILTER (WHERE days BETWEEN 1 AND 10) * 100.0 / COUNT(*), 1) AS active_pct,
+    ROUND(COUNT(*) FILTER (WHERE days > 10) * 100.0 / COUNT(*), 1) AS high_pct
+FROM segmented
+GROUP BY 1,2,3;
 
+""")
+# Print final table sizes
+for table in ["monthly_metrics", "funnel_by_product", "nudge_vs_activity", "campaign_perf"]:
+    print(f"{table}: ", con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+# Clean up heavy tables to slim the DB
 con.execute("DROP TABLE IF EXISTS camp_raw;")
 con.execute("DROP TABLE IF EXISTS camp;")
 con.execute("DROP TABLE IF EXISTS act;")
 con.execute("DROP TABLE IF EXISTS product_map;")
 
-
+# ✅ Close connection at the very end
 con.close()
-print(f"✅ Built {OUT_DB} successfully")
+print("✅ Built connectly_slim.duckdb successfully")
 

@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------
-#  Connectly Messaging Dashboard · Slim DuckDB (zero heavy SQL)
+#  Connectly Messaging Dashboard · Slim DuckDB (remote attach)
 # -----------------------------------------------------------------
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt, matplotlib.style as style
 import datetime, gc
@@ -11,17 +11,20 @@ plt.rcParams["text.color"] = TXT
 st.set_page_config(page_title="Connectly Dashboard", layout="wide")
 st.title("📊 Connectly Messaging Dashboard")
 
-# DuckDB connection ----------------------------------------------
+# DuckDB connection -----------------------------------------------
 @st.cache_resource(show_spinner=False)
 def get_con():
-    return duckdb.connect("connectly_slim.duckdb", read_only=True)
+    con = duckdb.connect(database=':memory:', read_only=True)
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute("ATTACH 'https://huggingface.co/datasets/prathamesh-rl/connectly-parquet/resolve/main/connectly_slim.duckdb' AS conn (READ_ONLY)")
+    return con
 con = get_con()
 qdf = lambda q: con.sql(q).df()
 
-# ── Month & product options -------------------------------------
-months = qdf("SELECT DISTINCT month FROM monthly_metrics ORDER BY month").month
+# Month & product filters ------------------------------------------
+months = qdf("SELECT DISTINCT month FROM conn.monthly_metrics ORDER BY month").month
 month_labels = pd.to_datetime(months).strftime("%b %Y")
-products = qdf("SELECT DISTINCT product FROM funnel_by_product ORDER BY product").product
+products = qdf("SELECT DISTINCT product FROM conn.funnel_by_product ORDER BY product").product
 
 c1, c2 = st.columns(2)
 sel_months = c1.multiselect("📅 Months", list(month_labels), default=month_labels[-6:])
@@ -36,8 +39,8 @@ sel_month_dates = tuple(
 month_clause = f"month IN {sel_month_dates}"
 prod_clause  = f"product IN {tuple(sel_products)}"
 
-# ═════ 1. Monthly overview (no filters) ═════════════════════════=
-monthly = qdf("SELECT * FROM monthly_metrics ORDER BY month")
+# 1. Monthly overview ---------------------------------------------
+monthly = qdf("SELECT * FROM conn.monthly_metrics ORDER BY month")
 monthly["label"] = pd.to_datetime(monthly.month).dt.strftime("%b %y")
 
 st.subheader("📈 Monthly Messaging & Cost Overview")
@@ -55,7 +58,7 @@ ax2.set_xticks(x); ax2.set_xticklabels(monthly.label, rotation=45)
 ax2.legend(); ax2.set_title("Monthly Cost")
 st.pyplot(fig); del monthly, fig; gc.collect()
 
-# ═════ 2. Funnel by product ═════════════════════════════════════
+# 2. Funnel by product --------------------------------------------
 funnel = qdf(f"""
     SELECT product, 
            SUM(sent) AS sent,
@@ -63,7 +66,7 @@ funnel = qdf(f"""
            SUM(clicked) AS clicked,
            ROUND(SUM(delivered)*100.0/SUM(sent),1) AS delivery_rate,
            ROUND(SUM(clicked)*100.0/SUM(sent),1)   AS click_rate
-    FROM funnel_by_product
+    FROM conn.funnel_by_product
     WHERE {month_clause} AND {prod_clause}
     GROUP BY 1
     ORDER BY sent DESC
@@ -77,10 +80,10 @@ funnel = pd.concat([tot,funnel], ignore_index=True)
 st.subheader("🪜 Funnel by Product")
 st.dataframe(funnel.style.format({"delivery_rate":"{:.1f}%","click_rate":"{:.1f}%"}), use_container_width=True)
 
-# ═════ 3. Nudges vs user activity ═══════════════════════════════
+# 3. Nudges vs user activity --------------------------------------
 activity = qdf(f"""
     SELECT active_bucket AS days, SUM(users) AS users
-    FROM nudge_vs_activity
+    FROM conn.nudge_vs_activity
     WHERE {month_clause} AND {prod_clause}
     GROUP BY 1 ORDER BY
       CASE days WHEN '0' THEN 0 WHEN '1-10' THEN 1 ELSE 2 END
@@ -95,7 +98,7 @@ for b,val in zip(bars, activity.pct):
 ax.set_xlabel("Active days bucket"); ax.set_ylabel("Users")
 st.pyplot(fig_h); del activity, fig_h; gc.collect()
 
-# ═════ 4. Campaign performance ═════════════════════════════════=
+# 4. Campaign performance -----------------------------------------
 campaigns = qdf(f"""
     SELECT
         sendout_name,
@@ -107,7 +110,7 @@ campaigns = qdf(f"""
         ROUND(AVG(inactive_pct),1)               AS inactive_pct,
         ROUND(AVG(active_pct),1)                 AS active_pct,
         ROUND(AVG(high_pct),1)                   AS high_pct
-    FROM campaign_perf
+    FROM conn.campaign_perf
     WHERE {month_clause} AND {prod_clause}
     GROUP BY 1
     ORDER BY sent DESC
