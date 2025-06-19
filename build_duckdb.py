@@ -125,29 +125,52 @@ CREATE TABLE campaign_perf AS
 WITH base AS (
     SELECT
         month, product, sendout_name,
+        user,
+        delivered,
+        clicks
+    FROM camp
+),
+agg AS (
+    SELECT
+        month, product, sendout_name,
         COUNT(DISTINCT user)                         AS sent,
         COUNT(DISTINCT CASE WHEN delivered THEN user END) AS delivered,
         SUM(clicks)                                  AS clicks
-    FROM camp
+    FROM base
     GROUP BY 1,2,3
 ),
 seg AS (
     SELECT
-        b.month, b.product, b.sendout_name, b.sent,
-        ROUND(SUM(CASE WHEN days = 0 THEN 1 END)*100.0/b.sent,1) AS inactive_pct,
-        ROUND(SUM(CASE WHEN days BETWEEN 1 AND 10 THEN 1 END)*100.0/b.sent,1) AS active_pct,
-        ROUND(SUM(CASE WHEN days > 10 THEN 1 END)*100.0/b.sent,1) AS high_pct
+        b.month, b.product, b.sendout_name, b.user,
+        COUNT(DISTINCT a.activity_date) AS days
     FROM base b
-    LEFT JOIN (
-        SELECT user, month, product,
-               COUNT(DISTINCT activity_date) AS days
-        FROM act GROUP BY 1,2,3
-    ) a USING(month, product, user)
+    LEFT JOIN act a
+    ON b.user = a.user AND b.month = a.month AND b.product = a.product
     GROUP BY 1,2,3,4
+),
+buckets AS (
+    SELECT
+        month, product, sendout_name,
+        CASE
+            WHEN COALESCE(days,0)=0 THEN 'inactive'
+            WHEN days BETWEEN 1 AND 10 THEN 'active'
+            ELSE 'high'
+        END AS bucket
+    FROM seg
+),
+summary AS (
+    SELECT
+        month, product, sendout_name,
+        ROUND(SUM(bucket='inactive') * 100.0 / COUNT(*),1) AS inactive_pct,
+        ROUND(SUM(bucket='active')   * 100.0 / COUNT(*),1) AS active_pct,
+        ROUND(SUM(bucket='high')     * 100.0 / COUNT(*),1) AS high_pct
+    FROM buckets
+    GROUP BY 1,2,3
 )
-SELECT b.*, seg.inactive_pct, seg.active_pct, seg.high_pct
-FROM base b
-JOIN seg USING(month, product, sendout_name);
+SELECT a.*, s.inactive_pct, s.active_pct, s.high_pct
+FROM agg a
+LEFT JOIN summary s
+USING(month, product, sendout_name);
 """)
 
 con.close()
