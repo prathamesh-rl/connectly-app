@@ -1,64 +1,32 @@
-name: Build connectly.duckdb via Python
+name: Build slim DuckDB
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:     # run manually
   schedule:
-    - cron: '0 3 * * *'  # every day at 3AM UTC
+    - cron: "30 1 * * *" # or nightly at 01:30 UTC
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
+          python-version: "3.10"
 
-      - name: Install DuckDB
-        run: pip install duckdb
+      - name: Install deps
+        run: pip install duckdb pandas pyarrow
 
-      - name: Build DuckDB from parquet
+      - name: Run build_duckdb.py
+        run: python build_duckdb.py
+
+      - name: Commit updated DB
         run: |
-          python - <<'PY'
-          import duckdb, glob, pathlib
-
-          con = duckdb.connect("connectly.duckdb")
-          print("▶ Building compact DuckDB")
-
-          # Campaign files: dispatch info (message logs)
-          camp_paths = glob.glob("parquet_trim/dispatch_date=*/data_0.parquet")
-          con.execute(f"""
-            CREATE OR REPLACE TABLE camp AS
-            SELECT
-              dispatched_at,
-              delivered,
-              sendout_name,
-              customer_external_id
-            FROM read_parquet({[str(pathlib.Path(p)) for p in camp_paths]}, union_by_name=True)
-          """)
-
-          # Activity files: user_phone already derived
-          act_paths = glob.glob("activity_chunks/activity_data_*.parquet")
-          con.execute(f"""
-            CREATE OR REPLACE TABLE act AS
-            SELECT
-              activity_date,
-              grp_id,
-              product,
-              user_phone
-            FROM read_parquet({[str(pathlib.Path(p)) for p in act_paths]}, union_by_name=True)
-          """)
-          PY
-
-      - name: Commit DB file
-        run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add connectly.duckdb
-          git commit -m "CI: refresh compact DB" || echo "No changes to commit"
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add connectly_slim.duckdb
+          git commit -m "CI: rebuild slim DuckDB" || echo "No changes"
           git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
