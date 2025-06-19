@@ -108,8 +108,8 @@ st.dataframe(
         "sent": "{:,.0f}",
         "delivered": "{:,.0f}",
         "click_rate": "{:.1f}%"
-    }).applymap(lambda v: "background-color: #222" if v == "Total" else "", subset=pd.IndexSlice[funnel.index[-1:], :]),
-    use_container_width=True
+    }).map(lambda v: "background-color: #222" if v == "Total" else "", subset=pd.IndexSlice[funnel.index[-1:], :])
+
 )
 
 # ─── Nudge vs Activity (layered bar) ────────────────────────────
@@ -166,7 +166,8 @@ st.dataframe(
         **{col: "{:.1f}%" for col in campaigns.columns if ":" in col}
     }),
     use_container_width=True,
-    column_config={"sendout_name": st.column_config.Column("Sendout Name", frozen=True)}
+    column_config={"sendout_name": "Sendout Name"}
+
 )
 
 st.caption("© 2025 Rocket Learning · Internal Dashboard")
