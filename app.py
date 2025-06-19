@@ -37,6 +37,14 @@ monthly["delivery_rate"] = (monthly.delivered / monthly.sent * 100).round(1)
 monthly["meta_cost"] = (monthly.delivered * 0.96 * 0.0107 + monthly.delivered * 0.04 * 0.0014).round()
 monthly["connectly_cost"] = (monthly.delivered * 0.90 * 0.0123 + 500).round()
 
+# Try loading sent_total if exists
+try:
+    sent_total = qdf("SELECT * FROM connectly_slim_new.monthly_sent_total ORDER BY month")
+    sent_total_dict = dict(zip(sent_total.month.astype(str), sent_total.total_sent))
+    monthly["sent_total"] = monthly.month.astype(str).map(sent_total_dict).fillna(monthly.sent)
+except:
+    monthly["sent_total"] = monthly.sent
+
 st.subheader("📈 Monthly Messaging & Cost Overview")
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor=BG)
 
@@ -44,14 +52,12 @@ x = range(len(monthly))
 w = 0.35
 
 # Sent vs Delivered bar chart
-ax1.bar([i - w/2 for i in x], monthly.sent, w, color="#00b4d8", label="Total Sent")
+ax1.bar([i - w/2 for i in x], monthly.sent_total, w, color="#00b4d8", label="Total Sent")
 ax1.bar([i + w/2 for i in x], monthly.delivered, w, color="#ffb703", label="Delivered")
 for i, r in monthly.iterrows():
-    ax1.text(i - w/2, r.sent, f"{int(r.sent/1e6)}M", ha='center', va='bottom', fontsize=8)
+    ax1.text(i - w/2, r.sent_total, f"{int(r.sent_total/1e6)}M", ha='center', va='bottom', fontsize=8)
     ax1.text(i + w/2, r.delivered, f"{int(r.delivery_rate)}%", ha='center', va='bottom', fontsize=8)
-ax1.set_xticks(list(x))
-ax1.set_xticklabels(monthly.label, rotation=45)
-ax1.set_title("Sent vs Delivered")
+ax1.set_xticks(list(x)); ax1.set_xticklabels(monthly.label, rotation=45); ax1.set_title("Sent vs Delivered")
 ax1.legend()
 
 # Cost line chart
@@ -60,10 +66,8 @@ ax2.plot(x, monthly.connectly_cost, marker="o", label="Connectly $", color="#f4f
 for i, r in monthly.iterrows():
     ax2.text(i, r.meta_cost, f"${int(r.meta_cost)}", ha='center', va='bottom', fontsize=8)
     ax2.text(i, r.connectly_cost, f"${int(r.connectly_cost)}", ha='center', va='bottom', fontsize=8)
-ax2.set_xticks(list(x))
-ax2.set_xticklabels(monthly.label, rotation=45)
-ax2.set_title("Monthly Cost")
-ax2.legend()
+ax2.set_xticks(list(x)); ax2.set_xticklabels(monthly.label, rotation=45)
+ax2.set_title("Monthly Cost"); ax2.legend()
 
 st.pyplot(fig); del monthly, fig; gc.collect()
 
@@ -83,16 +87,13 @@ sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
 month_clause = "month IN ({})".format(", ".join([f"DATE '{d}'" for d in sel_month_dates]))
 prod_clause = "product IN ({})".format(", ".join([repr(p) for p in sel_products]))
 
-
-
-
 # ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
     SELECT product,
            SUM(sent)::INT AS sent,
            SUM(delivered)::INT AS delivered,
            ROUND(SUM(clicked)*100.0/SUM(sent),1) AS click_rate
-    FROM funnel_by_product
+    FROM connectly_slim_new.funnel_by_product
     WHERE {month_clause} AND {prod_clause}
     GROUP BY 1 ORDER BY sent DESC
 """)
@@ -107,57 +108,34 @@ st.dataframe(
         "sent": "{:,.0f}",
         "delivered": "{:,.0f}",
         "click_rate": "{:.1f}%"
-    }).apply(lambda x: ["background-color: #222" if v == "Total" else "" for v in x], axis=1, subset=["product"]),
-    use_container_width=True
-)
-
-# (You can continue the rest of the Nudges + Campaign table logic unchanged below)
-
-# ─── Funnel Table ───────────────────────────────────────────────
-funnel = qdf(f"""
-    SELECT product,
-           SUM(sent)::INT AS sent,
-           SUM(delivered)::INT AS delivered,
-           ROUND(SUM(clicked)*100.0/SUM(sent),1) AS click_rate
-    FROM funnel_by_product
-    WHERE {month_clause} AND {prod_clause}
-    GROUP BY 1 ORDER BY sent DESC
-""")
-total = funnel[["sent", "delivered"]].sum().to_frame().T
-total["click_rate"] = (funnel["click_rate"] * funnel["sent"]).sum() / funnel["sent"].sum()
-total.insert(0, "product", "Total")
-funnel = pd.concat([funnel, total], ignore_index=True)
-
-st.subheader("🪜 Funnel by Product")
-st.dataframe(
-    funnel.style.format({"click_rate": "{:.1f}%"}).format({"sent": "{:,.0f}", "delivered": "{:,.0f}"}).apply(
-        lambda x: ["background-color: #222" if val == "Total" else "" for val in x], axis=1, subset=["product"]
-    ),
+    }).applymap(lambda v: "background-color: #222" if v == "Total" else "", subset=pd.IndexSlice[funnel.index[-1:], :]),
     use_container_width=True
 )
 
 # ─── Nudge vs Activity (layered bar) ────────────────────────────
-act = qdf(f"SELECT * FROM nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
-month_count = len(sel_month_dates)
-thresholds = [5 * month_count, 10 * month_count]
+try:
+    act = qdf(f"SELECT * FROM connectly_slim_new.nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
+    if "activity" in act.columns and "freq_bucket" in act.columns:
+        month_count = len(sel_month_dates)
+        agg = act.groupby(["activity", "freq_bucket"], as_index=False).agg({"users": "sum"})
+        pivot = agg.pivot(index="activity", columns="freq_bucket", values="users").fillna(0)
+        pivot = pivot[["low", "med", "high"]] if all(k in pivot.columns for k in ["low", "med", "high"]) else pivot
+        pivot = pivot.astype(int)
 
-agg = act.groupby(["activity", "freq_bucket"], as_index=False).agg({"users": "sum"})
-pivot = agg.pivot(index="activity", columns="freq_bucket", values="users").fillna(0)
-pivot = pivot[["low", "med", "high"]] if all(k in pivot.columns for k in ["low", "med", "high"]) else pivot
-pivot = pivot.astype(int)
+        st.subheader("📊 Nudge Frequency × User Activity")
+        fig, ax = plt.subplots(figsize=(8, 4), facecolor=BG)
+        bottom = None
+        colors = ["#90ee90", "#f7d674", "#f77f7f"]
+        labels = ["Low", "Medium", "High"]
 
-st.subheader("📊 Nudge Frequency × User Activity")
-fig, ax = plt.subplots(figsize=(8, 4), facecolor=BG)
-bottom = None
-colors = ["#90ee90", "#f7d674", "#f77f7f"]
-labels = ["Low", "Medium", "High"]
+        for i, col in enumerate(pivot.columns):
+            ax.bar(pivot.index, pivot[col], label=labels[i], bottom=bottom, color=colors[i])
+            bottom = pivot[col] if bottom is None else bottom + pivot[col]
 
-for i, col in enumerate(pivot.columns):
-    ax.bar(pivot.index, pivot[col], label=labels[i], bottom=bottom, color=colors[i])
-    bottom = pivot[col] if bottom is None else bottom + pivot[col]
-
-ax.set_ylabel("Users"); ax.legend(title="Nudge Frequency")
-st.pyplot(fig); del pivot, fig; gc.collect()
+        ax.set_ylabel("Users"); ax.legend(title="Nudge Frequency")
+        st.pyplot(fig); del pivot, fig; gc.collect()
+except Exception as e:
+    st.warning(f"⚠️ Could not load Nudge vs Activity chart: {e}")
 
 # ─── Campaign Performance Table ─────────────────────────────────
 campaigns = qdf(f"""
@@ -176,7 +154,7 @@ campaigns = qdf(f"""
            ROUND(AVG(high_low),1) AS "High: Low",
            ROUND(AVG(high_med),1) AS "High: Med",
            ROUND(AVG(high_high),1) AS "High: High"
-    FROM campaign_perf
+    FROM connectly_slim_new.campaign_perf
     WHERE {month_clause} AND {prod_clause}
     GROUP BY 1 ORDER BY sent DESC
 """)
