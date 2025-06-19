@@ -1,18 +1,11 @@
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt
-import matplotlib.style as style, gc
-import requests, os
+import matplotlib.style as style, gc, requests, os
 
-# Always use dark theme
+# ─── Configuration ─────────────────────────────────────────────
 style.use("dark_background")
 BG, TXT = "#0e1117", "#d3d3d3"
 plt.rcParams["text.color"] = TXT
-st.set_page_config(page_title="Connectly Dashboard", layout="wide")
-st.markdown("""
-    <style>
-    body { background-color: #0e1117; color: #d3d3d3; }
-    .stMultiSelect [data-baseweb="tag"] { background-color: #444 !important; color: white; }
-    </style>
-""", unsafe_allow_html=True)
+st.set_page_config(layout="wide", page_title="Connectly Dashboard")
 
 DB_URL = "https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim_new.duckdb"
 DB_PATH = "connectly_slim_new.duckdb"
@@ -27,8 +20,8 @@ def get_con():
 con = get_con()
 qdf = lambda q: con.sql(q).df()
 
-# ─── Monthly Messaging & Cost Overview (Unfiltered) ─────────────
-monthly = qdf("SELECT * FROM monthly_metrics ORDER BY month")
+# ─── Monthly Messaging (unfiltered) ────────────────────────────
+monthly = qdf("SELECT * FROM connectly_slim_new.monthly_metrics ORDER BY month")
 monthly["label"] = pd.to_datetime(monthly.month).dt.strftime("%b %y")
 
 delivered_map = {
@@ -46,33 +39,51 @@ monthly["connectly_cost"] = (monthly.delivered * 0.90 * 0.0123 + 500).round()
 
 st.subheader("📈 Monthly Messaging & Cost Overview")
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor=BG)
-x, w = range(len(monthly)), 0.35
-ax1.bar([i - w/2 for i in x], monthly.sent, w, color="#00b4d8")
-ax1.bar([i + w/2 for i in x], monthly.delivered, w, color="#ffb703")
+
+x = range(len(monthly))
+w = 0.35
+
+# Sent vs Delivered bar chart
+ax1.bar([i - w/2 for i in x], monthly.sent, w, color="#00b4d8", label="Total Sent")
+ax1.bar([i + w/2 for i in x], monthly.delivered, w, color="#ffb703", label="Delivered")
 for i, r in monthly.iterrows():
     ax1.text(i - w/2, r.sent, f"{int(r.sent/1e6)}M", ha='center', va='bottom', fontsize=8)
     ax1.text(i + w/2, r.delivered, f"{int(r.delivery_rate)}%", ha='center', va='bottom', fontsize=8)
-ax1.set_xticks(x); ax1.set_xticklabels(monthly.label, rotation=45); ax1.set_title("Sent vs Delivered")
+ax1.set_xticks(list(x))
+ax1.set_xticklabels(monthly.label, rotation=45)
+ax1.set_title("Sent vs Delivered")
+ax1.legend()
+
+# Cost line chart
 ax2.plot(x, monthly.meta_cost, marker="o", label="Meta $", color="#90e0ef")
 ax2.plot(x, monthly.connectly_cost, marker="o", label="Connectly $", color="#f4f1bb")
-ax2.set_xticks(x); ax2.set_xticklabels(monthly.label, rotation=45)
-ax2.set_title("Monthly Cost"); ax2.legend()
+for i, r in monthly.iterrows():
+    ax2.text(i, r.meta_cost, f"${int(r.meta_cost)}", ha='center', va='bottom', fontsize=8)
+    ax2.text(i, r.connectly_cost, f"${int(r.connectly_cost)}", ha='center', va='bottom', fontsize=8)
+ax2.set_xticks(list(x))
+ax2.set_xticklabels(monthly.label, rotation=45)
+ax2.set_title("Monthly Cost")
+ax2.legend()
+
 st.pyplot(fig); del monthly, fig; gc.collect()
 
-# ─── Filters ───────────────────────────────────────────────────
-months_df = qdf("SELECT DISTINCT month FROM funnel_by_product ORDER BY month")
-products_df = qdf("SELECT DISTINCT product FROM funnel_by_product ORDER BY product")
+# ─── Filters (Placed below Graph) ──────────────────────────────
+months_df = qdf("SELECT DISTINCT month FROM connectly_slim_new.funnel_by_product ORDER BY month")
+products_df = qdf("SELECT DISTINCT product FROM connectly_slim_new.funnel_by_product ORDER BY product")
+
 months = months_df["month"].tolist()
 month_labels = pd.to_datetime(months).strftime("%b %Y").tolist()
 products = products_df["product"].tolist()
 
 c1, c2 = st.columns(2)
 sel_months = c1.multiselect("📅 Months", month_labels, default=["May 2025"])
-sel_products = c2.multiselect("🛍️ Products", products, default=products)
+sel_products = c2.multiselect("🛍️ Products", products, default=products, label_visibility="visible")
 
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
-month_clause = f"""month IN ({', '.join([f"DATE '{d}'" for d in sel_month_dates])})"""
-prod_clause = f"product IN ({', '.join(repr(p) for p in sel_products)})"
+month_clause = "month IN ({})".format(", ".join([f"DATE '{d}'" for d in sel_month_dates]))
+prod_clause = "product IN ({})".format(", ".join([repr(p) for p in sel_products]))
+
+
 
 
 # ─── Funnel by Product ─────────────────────────────────────────
