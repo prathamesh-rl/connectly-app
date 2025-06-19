@@ -1,0 +1,9 @@
+# Ignore raw data and build files
+activity_chunks/
+parquet_trim/
+build_duckdb.py
+connectly.duckdb
+connectly_business_id_mapping.parquet
+.github/
+.gitattributes
+.venv/
