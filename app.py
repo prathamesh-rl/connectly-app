@@ -1,15 +1,5 @@
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt
 import matplotlib.style as style, gc
-
-# ─── Always use dark theme ─────────────────────────────────────
-style.use("dark_background")
-BG, TXT = "#0e1117", "#d3d3d3"
-plt.rcParams["text.color"] = TXT
-st.set_page_config(page_title="Connectly Dashboard", layout="wide")
-
-# ─── Connect DuckDB from HuggingFace ───────────────────────────
-import os
-import duckdb
 import requests
 
 DB_URL = "https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim_new.duckdb"
@@ -21,6 +11,9 @@ def get_con():
         with open(DB_PATH, "wb") as f:
             f.write(requests.get(DB_URL).content)
     return duckdb.connect(DB_PATH, read_only=True)
+
+con = get_con()
+qdf = lambda q: con.sql(q).df()
 
 # ─── Unfiltered Monthly Overview ───────────────────────────────
 monthly = qdf("SELECT * FROM conn.monthly_metrics ORDER BY month")
