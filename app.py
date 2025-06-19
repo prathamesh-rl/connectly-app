@@ -1,7 +1,18 @@
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt
 import matplotlib.style as style, gc
-import requests
-import os
+import requests, os
+
+# Always use dark theme
+style.use("dark_background")
+BG, TXT = "#0e1117", "#d3d3d3"
+plt.rcParams["text.color"] = TXT
+st.set_page_config(page_title="Connectly Dashboard", layout="wide")
+st.markdown("""
+    <style>
+    body { background-color: #0e1117; color: #d3d3d3; }
+    .stMultiSelect [data-baseweb="tag"] { background-color: #444 !important; color: white; }
+    </style>
+""", unsafe_allow_html=True)
 
 DB_URL = "https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim_new.duckdb"
 DB_PATH = "connectly_slim_new.duckdb"
@@ -16,8 +27,8 @@ def get_con():
 con = get_con()
 qdf = lambda q: con.sql(q).df()
 
-# ─── Unfiltered Monthly Overview ───────────────────────────────
-monthly = qdf("SELECT * FROM conn.monthly_metrics ORDER BY month")
+# ─── Monthly Messaging & Cost Overview (Unfiltered) ─────────────
+monthly = qdf("SELECT * FROM monthly_metrics ORDER BY month")
 monthly["label"] = pd.to_datetime(monthly.month).dt.strftime("%b %y")
 
 delivered_map = {
@@ -48,20 +59,21 @@ ax2.set_xticks(x); ax2.set_xticklabels(monthly.label, rotation=45)
 ax2.set_title("Monthly Cost"); ax2.legend()
 st.pyplot(fig); del monthly, fig; gc.collect()
 
-# ─── Filters after Graph ───────────────────────────────────────
-months_df = qdf("SELECT DISTINCT month FROM conn.funnel_by_product ORDER BY month")
-products_df = qdf("SELECT DISTINCT product FROM conn.funnel_by_product ORDER BY product")
+# ─── Filters ───────────────────────────────────────────────────
+months_df = qdf("SELECT DISTINCT month FROM funnel_by_product ORDER BY month")
+products_df = qdf("SELECT DISTINCT product FROM funnel_by_product ORDER BY product")
 months = months_df["month"].tolist()
 month_labels = pd.to_datetime(months).strftime("%b %Y").tolist()
 products = products_df["product"].tolist()
 
 c1, c2 = st.columns(2)
 sel_months = c1.multiselect("📅 Months", month_labels, default=["May 2025"])
-sel_products = c2.multiselect("🛍️ Products", products, default=products, label_visibility="visible")
+sel_products = c2.multiselect("🛍️ Products", products, default=products)
 
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
-month_clause = f"month IN ({', '.join([repr(d) for d in sel_month_dates])})"
-prod_clause = f"product IN ({', '.join([repr(p) for p in sel_products])})"
+month_clause = f"month IN ({', '.join(repr(d) for d in sel_month_dates)})"
+prod_clause = f"product IN ({', '.join(repr(p) for p in sel_products)})"
+
 
 # ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
