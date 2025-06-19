@@ -1,15 +1,15 @@
-# Connectly Messaging Dashboard – Render-Optimized
+# Connectly Messaging Dashboard — Render Optimized, Final Build
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt, matplotlib.style as style
 import datetime, gc
 
-# ─── Setup ────────────────────────────────────────────────
+# ─── Setup ───────────────────────────────────────────────
 style.use("dark_background")
 BG, TXT = "#0e1117", "#d3d3d3"
 plt.rcParams["text.color"] = TXT
 st.set_page_config(page_title="Connectly Dashboard", layout="wide")
 st.title("📊 Connectly Messaging Dashboard")
 
-# ─── DB connection (remote HuggingFace) ───────────────────
+# ─── DB connection (from HuggingFace) ─────────────────────
 @st.cache_resource(show_spinner=False)
 def get_con():
     con = duckdb.connect(database=':memory:')
@@ -29,7 +29,7 @@ def get_con():
 con = get_con()
 qdf = lambda q: con.sql(q).df()
 
-# ─── Monthly Messaging & Cost Overview ─────────────────────
+# ─── Monthly Messaging & Cost Overview (not filtered) ─────
 monthly = qdf("SELECT * FROM conn.monthly_metrics ORDER BY month")
 monthly["label"] = pd.to_datetime(monthly.month).dt.strftime("%b %Y")
 
@@ -54,24 +54,21 @@ ax2.set_ylabel("Cost (₹)"); ax2.set_title("Monthly Cost"); ax2.legend()
 
 st.pyplot(fig); del monthly, fig; gc.collect()
 
-# ─── Filters Section (below the chart) ─────────────────────
+# ─── Filters Section ──────────────────────────────────────
 def to_sql_in(values):
     return "(" + ",".join(f"'{v}'" for v in values) + ")"
 
-months = qdf("SELECT DISTINCT month FROM conn.monthly_metrics ORDER BY month")["month"]
-month_labels = pd.to_datetime(months).dt.strftime("%b %Y")
-products = qdf("SELECT DISTINCT product FROM conn.funnel_by_product ORDER BY product")["product"]
+months_df = qdf("SELECT DISTINCT month FROM conn.monthly_metrics ORDER BY month")
+months = months_df["month"].tolist()
+month_labels = [pd.to_datetime(m).strftime("%b %Y") for m in months]
+products = qdf("SELECT DISTINCT product FROM conn.funnel_by_product ORDER BY product")["product"].tolist()
 
 c1, c2 = st.columns(2)
 default_month = "May 2025"
-sel_months = c1.multiselect("🗓️ Months", list(month_labels),
-                            default=[default_month],
-                            label_visibility="visible")
-sel_products = c2.multiselect("🛍️ Products", list(products),
-                              default=list(products),
-                              label_visibility="visible")
+sel_months = c1.multiselect("🗓️ Months", month_labels, default=[default_month])
+sel_products = c2.multiselect("🛍️ Products", products, default=products)
 
-sel_month_dates = [months[month_labels.get_loc(m)] for m in sel_months]
+sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
 month_clause = f"month IN {to_sql_in(sel_month_dates)}"
 prod_clause = f"product IN {to_sql_in(sel_products)}"
 
