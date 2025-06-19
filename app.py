@@ -92,7 +92,7 @@ funnel = qdf(f"""
            SUM(sent)::INT AS sent,
            SUM(delivered)::INT AS delivered,
            ROUND(SUM(clicked)*100.0/SUM(sent),1) AS click_rate
-    FROM conn.funnel_by_product
+    FROM funnel_by_product
     WHERE {month_clause} AND {prod_clause}
     GROUP BY 1 ORDER BY sent DESC
 """)
@@ -119,7 +119,7 @@ funnel = qdf(f"""
            SUM(sent)::INT AS sent,
            SUM(delivered)::INT AS delivered,
            ROUND(SUM(clicked)*100.0/SUM(sent),1) AS click_rate
-    FROM conn.funnel_by_product
+    FROM funnel_by_product
     WHERE {month_clause} AND {prod_clause}
     GROUP BY 1 ORDER BY sent DESC
 """)
@@ -137,7 +137,7 @@ st.dataframe(
 )
 
 # ─── Nudge vs Activity (layered bar) ────────────────────────────
-act = qdf(f"SELECT * FROM conn.nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
+act = qdf(f"SELECT * FROM nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
 month_count = len(sel_month_dates)
 thresholds = [5 * month_count, 10 * month_count]
 
@@ -176,7 +176,7 @@ campaigns = qdf(f"""
            ROUND(AVG(high_low),1) AS "High: Low",
            ROUND(AVG(high_med),1) AS "High: Med",
            ROUND(AVG(high_high),1) AS "High: High"
-    FROM conn.campaign_perf
+    FROM campaign_perf
     WHERE {month_clause} AND {prod_clause}
     GROUP BY 1 ORDER BY sent DESC
 """)
