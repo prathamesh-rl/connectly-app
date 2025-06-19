@@ -1,6 +1,7 @@
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt
 import matplotlib.style as style, gc
 import requests
+import os
 
 DB_URL = "https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim_new.duckdb"
 DB_PATH = "connectly_slim_new.duckdb"
