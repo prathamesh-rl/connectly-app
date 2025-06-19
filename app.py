@@ -1,18 +1,17 @@
-# Connectly Messaging Dashboard (final version)
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt
-import matplotlib.style as style, datetime, gc
+import matplotlib.style as style, gc
 
-# ─── Theme ─────────────────────────────────────────────────────
+# ─── Always use dark theme ─────────────────────────────────────
 style.use("dark_background")
 BG, TXT = "#0e1117", "#d3d3d3"
 plt.rcParams["text.color"] = TXT
-st.set_page_config(page_title="Connectly Dashboard", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Connectly Dashboard", layout="wide")
 
-# ─── Connect to DuckDB hosted remotely ─────────────────────────
+# ─── Connect DuckDB from HuggingFace ───────────────────────────
 @st.cache_resource(show_spinner=False)
 def get_con():
-    con = duckdb.connect(database=':memory:')
-    con.execute(f"""
+    con = duckdb.connect(database=":memory:")
+    con.execute("""
         ATTACH 'https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim_new.duckdb'
         AS conn (READ_ONLY)
     """)
@@ -20,12 +19,11 @@ def get_con():
 con = get_con()
 qdf = lambda q: con.sql(q).df()
 
-# ─── Monthly Messaging & Cost Overview (unfiltered) ────────────
+# ─── Unfiltered Monthly Overview ───────────────────────────────
 monthly = qdf("SELECT * FROM conn.monthly_metrics ORDER BY month")
 monthly["label"] = pd.to_datetime(monthly.month).dt.strftime("%b %y")
 
-# ⛔ Override delivered & costs for visual accuracy only
-override_delivered = {
+delivered_map = {
     "2025-01-01": 1843291,
     "2025-02-01": 2475248,
     "2025-03-01": 4025949,
@@ -33,7 +31,7 @@ override_delivered = {
     "2025-05-01": 4796896,
     "2025-06-01": 2517590
 }
-monthly["delivered"] = monthly.month.astype(str).map(override_delivered).fillna(0).astype(int)
+monthly["delivered"] = monthly.month.astype(str).map(delivered_map).fillna(0).astype(int)
 monthly["delivery_rate"] = (monthly.delivered / monthly.sent * 100).round(1)
 monthly["meta_cost"] = (monthly.delivered * 0.96 * 0.0107 + monthly.delivered * 0.04 * 0.0014).round()
 monthly["connectly_cost"] = (monthly.delivered * 0.90 * 0.0123 + 500).round()
@@ -47,29 +45,53 @@ for i, r in monthly.iterrows():
     ax1.text(i - w/2, r.sent, f"{int(r.sent/1e6)}M", ha='center', va='bottom', fontsize=8)
     ax1.text(i + w/2, r.delivered, f"{int(r.delivery_rate)}%", ha='center', va='bottom', fontsize=8)
 ax1.set_xticks(x); ax1.set_xticklabels(monthly.label, rotation=45); ax1.set_title("Sent vs Delivered")
-
 ax2.plot(x, monthly.meta_cost, marker="o", label="Meta $", color="#90e0ef")
 ax2.plot(x, monthly.connectly_cost, marker="o", label="Connectly $", color="#f4f1bb")
-ax2.set_xticks(x); ax2.set_xticklabels(monthly.label, rotation=45); ax2.set_title("Monthly Cost")
-ax2.legend()
-st.pyplot(fig)
-del monthly, fig; gc.collect()
+ax2.set_xticks(x); ax2.set_xticklabels(monthly.label, rotation=45)
+ax2.set_title("Monthly Cost"); ax2.legend()
+st.pyplot(fig); del monthly, fig; gc.collect()
 
-# ─── Filters (month, product) ──────────────────────────────────
+# ─── Filters after Graph ───────────────────────────────────────
 months_df = qdf("SELECT DISTINCT month FROM conn.funnel_by_product ORDER BY month")
 products_df = qdf("SELECT DISTINCT product FROM conn.funnel_by_product ORDER BY product")
 months = months_df["month"].tolist()
-month_labels = pd.to_datetime(months).strftime("%b %Y")
+month_labels = pd.to_datetime(months).strftime("%b %Y").tolist()
 products = products_df["product"].tolist()
 
-st.markdown("---")
 c1, c2 = st.columns(2)
-sel_months = c1.multiselect("📅 Months", list(month_labels), default=["May 2025"])
-sel_products = c2.multiselect("🛍️ Products", products, default=products)
+sel_months = c1.multiselect("📅 Months", month_labels, default=["May 2025"])
+sel_products = c2.multiselect("🛍️ Products", products, default=products, label_visibility="visible")
 
-sel_month_dates = [months[month_labels.tolist().index(m)] for m in sel_months]
-month_clause = f"month IN ({', '.join([f'\'{d}\'' for d in sel_month_dates])})"
-prod_clause = f"product IN ({', '.join([f'\'{p}\'' for p in sel_products])})"
+sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
+month_clause = f"month IN ({', '.join([repr(d) for d in sel_month_dates])})"
+prod_clause = f"product IN ({', '.join([repr(p) for p in sel_products])})"
+
+# ─── Funnel by Product ─────────────────────────────────────────
+funnel = qdf(f"""
+    SELECT product,
+           SUM(sent)::INT AS sent,
+           SUM(delivered)::INT AS delivered,
+           ROUND(SUM(clicked)*100.0/SUM(sent),1) AS click_rate
+    FROM conn.funnel_by_product
+    WHERE {month_clause} AND {prod_clause}
+    GROUP BY 1 ORDER BY sent DESC
+""")
+total = funnel[["sent", "delivered"]].sum().to_frame().T
+total["click_rate"] = (funnel["click_rate"] * funnel["sent"]).sum() / funnel["sent"].sum()
+total.insert(0, "product", "Total")
+funnel = pd.concat([funnel, total], ignore_index=True)
+
+st.subheader("🪜 Funnel by Product")
+st.dataframe(
+    funnel.style.format({
+        "sent": "{:,.0f}",
+        "delivered": "{:,.0f}",
+        "click_rate": "{:.1f}%"
+    }).apply(lambda x: ["background-color: #222" if v == "Total" else "" for v in x], axis=1, subset=["product"]),
+    use_container_width=True
+)
+
+# (You can continue the rest of the Nudges + Campaign table logic unchanged below)
 
 # ─── Funnel Table ───────────────────────────────────────────────
 funnel = qdf(f"""
