@@ -8,16 +8,19 @@ plt.rcParams["text.color"] = TXT
 st.set_page_config(page_title="Connectly Dashboard", layout="wide")
 
 # ─── Connect DuckDB from HuggingFace ───────────────────────────
+import os
+import duckdb
+import requests
+
+DB_URL = "https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim_new.duckdb"
+DB_PATH = "connectly_slim_new.duckdb"
+
 @st.cache_resource(show_spinner=False)
 def get_con():
-    con = duckdb.connect(database=":memory:")
-    con.execute("""
-        ATTACH 'https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim_new.duckdb'
-        AS conn (READ_ONLY)
-    """)
-    return con
-con = get_con()
-qdf = lambda q: con.sql(q).df()
+    if not os.path.exists(DB_PATH):
+        with open(DB_PATH, "wb") as f:
+            f.write(requests.get(DB_URL).content)
+    return duckdb.connect(DB_PATH, read_only=True)
 
 # ─── Unfiltered Monthly Overview ───────────────────────────────
 monthly = qdf("SELECT * FROM conn.monthly_metrics ORDER BY month")
