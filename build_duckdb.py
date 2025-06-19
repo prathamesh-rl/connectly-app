@@ -41,8 +41,8 @@ SELECT
     COUNT(*)                                    AS sent,
     COUNT(*) FILTER (WHERE delivered)           AS delivered,
     ROUND(COUNT(*) FILTER (WHERE delivered)*100.0/COUNT(*),1) AS delivery_rate,
-    ROUND((delivered*0.96*0.0107) + (delivered*0.04*0.0014))  AS meta_cost,
-    ROUND((delivered*0.90*0.0123) + 500)                      AS connectly_cost
+    ROUND((CAST(delivered AS INTEGER)*0.96*0.0107) + (CAST(delivered AS INTEGER)*0.04*0.0014))  AS meta_cost,
+    ROUND((CAST(delivered AS INTEGER)*0.90*0.0123) + 500)                                       AS connectly_cost
 FROM camp
 GROUP BY 1 ORDER BY 1;
 """)
