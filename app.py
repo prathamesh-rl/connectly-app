@@ -30,9 +30,10 @@ con = get_con()
 qdf = lambda q: con.sql(q).df()
 
 # Filters
-months = qdf("SELECT DISTINCT month FROM monthly_metrics ORDER BY month").month
+months = qdf("SELECT DISTINCT month FROM monthly_metrics ORDER BY month")["month"]
 month_labels = pd.to_datetime(months).dt.strftime("%b %Y")
-products = qdf("SELECT DISTINCT product FROM funnel_by_product ORDER BY product").product
+
+products = qdf("SELECT DISTINCT product FROM funnel_by_product ORDER BY product")["product"]
 
 c1, c2 = st.columns(2)
 sel_months = c1.multiselect("📅 Months", list(month_labels), default=list(month_labels)[-6:])
