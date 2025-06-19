@@ -28,8 +28,9 @@ con = get_con()
 qdf = lambda q: con.sql(q).df()
 
 # Month & product filters ------------------------------------------
-months = qdf("SELECT DISTINCT month FROM conn.monthly_metrics ORDER BY month").month
-month_labels = pd.to_datetime(months).strftime("%b %Y")
+months = qdf("SELECT DISTINCT month FROM monthly_metrics ORDER BY month").month
+month_labels = pd.to_datetime(months).dt.strftime("%b %Y")
+
 products = qdf("SELECT DISTINCT product FROM conn.funnel_by_product ORDER BY product").product
 
 c1, c2 = st.columns(2)
