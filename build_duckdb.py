@@ -1,28 +1,52 @@
-import duckdb, os
+import duckdb
+import os
 
 RAW_CAMP = "parquet_trim/dispatch_date=*/data_0.parquet"
-RAW_ACT  = "activity_chunks/activity_data_*.parquet"
-OUT_DB   = "connectly_slim.duckdb"
+RAW_ACT = "activity_chunks/activity_data_*.parquet"
+MAP_FILE = "connectly_business_id_mapping.parquet"
+OUT_DB = "connectly_slim.duckdb"
 
+# Delete if exists
 if os.path.exists(OUT_DB):
     os.remove(OUT_DB)
 con = duckdb.connect(OUT_DB)
 
-# ── 1. Campaign data ─────────────────────────────────────────────
+# ─── 1. Raw campaign table ─────────────────────────────────────
 con.execute(f"""
-CREATE TABLE camp AS
+CREATE TABLE camp_raw AS
 SELECT
-    DATE_TRUNC('month', CAST(dispatched_at AS TIMESTAMP))::DATE AS month,
+    customer_external_id              AS user,
     business_id,
-    customer_external_id               AS user,
     sendout_name,
-    CAST(delivered IS NOT NULL AS BOOLEAN)       AS delivered,
-    TRY_CAST(button_responses AS INTEGER) + TRY_CAST(link_clicks AS INTEGER) AS clicks
-FROM read_parquet('{RAW_CAMP}')
-WHERE dispatched_at IS NOT NULL;
+    CAST(dispatched_at AS TIMESTAMP)  AS dispatched_at,
+    delivered,
+    TRY_CAST(button_responses AS INT) AS button_responses,
+    TRY_CAST(link_clicks AS INT)      AS link_clicks
+FROM read_parquet('{RAW_CAMP}');
 """)
 
-# ── 2. Activity data ─────────────────────────────────────────────
+# ─── 2. Map business_id to product ─────────────────────────────
+con.execute(f"""
+CREATE TABLE product_map AS
+SELECT business_id, product
+FROM read_parquet('{MAP_FILE}');
+""")
+
+# ─── 3. Final campaign table with product & month ──────────────
+con.execute("""
+CREATE TABLE camp AS
+SELECT
+    DATE_TRUNC('month', dispatched_at)::DATE       AS month,
+    COALESCE(p.product, 'Unknown')                 AS product,
+    cr.sendout_name,
+    cr.user,
+    (cr.delivered IS NOT NULL)                     AS delivered,
+    cr.button_responses + cr.link_clicks           AS clicks
+FROM camp_raw cr
+LEFT JOIN product_map p USING (business_id);
+""")
+
+# ─── 4. Activity table ─────────────────────────────────────────
 con.execute(f"""
 CREATE TABLE act AS
 SELECT
@@ -33,7 +57,7 @@ SELECT
 FROM read_parquet('{RAW_ACT}');
 """)
 
-# 3️⃣ monthly_metrics  ---------------------------------------------
+# ─── 5. Monthly metrics ────────────────────────────────────────
 con.execute("""
 CREATE TABLE monthly_metrics AS
 SELECT
@@ -52,25 +76,25 @@ FROM camp
 GROUP BY 1 ORDER BY 1;
 """)
 
-# 4️⃣ funnel_by_product  -------------------------------------------
+# ─── 6. Funnel by product ──────────────────────────────────────
 con.execute("""
 CREATE TABLE funnel_by_product AS
 SELECT
     month,
     product,
-    COUNT(DISTINCT user)                               AS sent,
-    COUNT(DISTINCT CASE WHEN delivered THEN user END)  AS delivered,
-    COUNT(DISTINCT CASE WHEN clicks>0  THEN user END)  AS clicked,
+    COUNT(DISTINCT user)                             AS sent,
+    COUNT(DISTINCT CASE WHEN delivered THEN user END) AS delivered,
+    COUNT(DISTINCT CASE WHEN clicks > 0 THEN user END) AS clicked,
     ROUND(COUNT(DISTINCT CASE WHEN delivered THEN user END)*100.0
-          /COUNT(DISTINCT user),1)                     AS delivery_rate,
-    ROUND(COUNT(DISTINCT CASE WHEN clicks>0 THEN user END)*100.0
-          /COUNT(DISTINCT user),1)                     AS click_rate
+          /COUNT(DISTINCT user),1)                   AS delivery_rate,
+    ROUND(COUNT(DISTINCT CASE WHEN clicks > 0 THEN user END)*100.0
+          /COUNT(DISTINCT user),1)                   AS click_rate
 FROM camp
-WHERE product<>'Unknown'
+WHERE product <> 'Unknown'
 GROUP BY 1,2;
 """)
 
-# 5️⃣ nudge_vs_activity  -------------------------------------------
+# ─── 7. Nudges vs activity ─────────────────────────────────────
 con.execute("""
 CREATE TABLE nudge_vs_activity AS
 WITH act_days AS (
@@ -91,11 +115,11 @@ SELECT
     END                           AS active_bucket,
     COUNT(*)                      AS users
 FROM nudged n
-LEFT JOIN act_days a USING (user, month, product)
+LEFT JOIN act_days a USING(user, month, product)
 GROUP BY 1,2,3;
 """)
 
-# 6️⃣ campaign_perf  -----------------------------------------------
+# ─── 8. Campaign performance ───────────────────────────────────
 con.execute("""
 CREATE TABLE campaign_perf AS
 WITH base AS (
@@ -109,20 +133,23 @@ WITH base AS (
 ),
 seg AS (
     SELECT
-        c.month, c.product, c.sendout_name, c.sent,
-        ROUND(SUM(CASE WHEN days=0                THEN 1 END)*100.0/c.sent,1) AS inactive_pct,
-        ROUND(SUM(CASE WHEN days BETWEEN 1 AND 10 THEN 1 END)*100.0/c.sent,1) AS active_pct,
-        ROUND(SUM(CASE WHEN days>10              THEN 1 END)*100.0/c.sent,1) AS high_pct
-    FROM base c
+        b.month, b.product, b.sendout_name, b.sent,
+        ROUND(SUM(CASE WHEN days = 0 THEN 1 END)*100.0/b.sent,1) AS inactive_pct,
+        ROUND(SUM(CASE WHEN days BETWEEN 1 AND 10 THEN 1 END)*100.0/b.sent,1) AS active_pct,
+        ROUND(SUM(CASE WHEN days > 10 THEN 1 END)*100.0/b.sent,1) AS high_pct
+    FROM base b
     LEFT JOIN (
-        SELECT user, month, product, COUNT(DISTINCT activity_date) AS days
+        SELECT user, month, product,
+               COUNT(DISTINCT activity_date) AS days
         FROM act GROUP BY 1,2,3
-    ) a USING (month, product, user)
+    ) a USING(month, product, user)
     GROUP BY 1,2,3,4
 )
-SELECT b.*, s.inactive_pct, s.active_pct, s.high_pct
-FROM base b JOIN seg s USING (month, product, sendout_name);
+SELECT b.*, seg.inactive_pct, seg.active_pct, seg.high_pct
+FROM base b
+JOIN seg USING(month, product, sendout_name);
 """)
 
 con.close()
 print(f"✅ Built {OUT_DB} successfully")
+
