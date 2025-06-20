@@ -84,7 +84,8 @@ month_labels = pd.to_datetime(months).strftime("%b %Y").tolist()
 
 sel_months = st.multiselect("📅 Months", month_labels, default=["May 2025"])
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
-month_clause = f"month IN ({', '.join([f'DATE \'{d}\'' for d in sel_month_dates])})"
+month_clause = "month IN (" + ", ".join([f"DATE '{d}'" for d in sel_month_dates]) + ")"
+
 
 # ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
@@ -118,7 +119,7 @@ products = products_df["product"].tolist()
 sel_products = st.multiselect("🛍️ Products", products, default=products)
 
 # Clause for remaining queries
-prod_clause = f"product IN ({', '.join([repr(p) for p in sel_products])})"
+prod_clause = "product IN (" + ", ".join([f"'{p}'" for p in sel_products]) + ")"
 
 
 # Nudge vs Activity (layered bar) — light theme ready
