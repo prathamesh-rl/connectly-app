@@ -11,6 +11,8 @@ plt.rcParams["ytick.color"] = TXT
 plt.rcParams["axes.edgecolor"] = TXT
 st.set_page_config(layout="wide", page_title="Connectly Dashboard")
 
+st.title("📊 Connectly Dashboard")
+
 DB_URL = "https://huggingface.co/datasets/pbhumble/connectly-parquet/resolve/main/connectly_slim_new.duckdb"
 DB_PATH = "connectly_slim_new.duckdb"
 
@@ -107,7 +109,8 @@ st.dataframe(
     funnel.style.format({
         "sent": "{:,.0f}", "delivered": "{:,.0f}", "delivery_rate": "{:.1f}%"
     }).apply(
-        lambda x: ["background-color: #eee" if v == "Total" else "" for v in x], axis=1, subset=["product"]
+        lambda x: ['background-color: #f0f0f0' if x.name == funnel.index[-1] else '' for _ in x],
+    axis=1
     ),
     use_container_width=True
 )
@@ -122,35 +125,42 @@ sel_products = st.multiselect("🛍️ Products", products, default=products)
 prod_clause = "product IN (" + ", ".join([f"'{p}'" for p in sel_products]) + ")"
 
 
-# Nudge vs Activity (layered bar) — light theme ready
+# ─── Nudge vs Activity (Layered Bar, With % and Labels) ───────────────
 act = qdf(f"SELECT * FROM connectly_slim_new.nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
 month_count = len(sel_month_dates)
 
-# Aggregate frequency totals for each activity bucket
 agg = act.groupby("active_bucket")[["low_freq", "med_freq", "high_freq"]].sum().astype(int)
-agg = agg.loc[["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"]]  # enforce order
+agg = agg.loc[["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"]]
+agg["total"] = agg.sum(axis=1)
 
-st.subheader("📊 Nudge Frequency × User Activity")
-fig, ax = plt.subplots(figsize=(8, 4), facecolor=BG)
-bottom = None
-colors = ["#A8DADC", "#FFD166", "#EF476F"]  # light blue, yellow, coral
+colors = ["#bde0fe", "#ffd60a", "#ff5a5f"]  # pastel blue, yellow, red
 labels = ["Low", "Medium", "High"]
 
-for i, col in enumerate(agg.columns):
-    bars = ax.bar(agg.index, agg[col], label=labels[i], bottom=bottom, color=colors[i])
+st.subheader("📊 Nudge Frequency × User Activity")
+fig, ax = plt.subplots(figsize=(10, 5), facecolor="white")
+bottom = None
+
+for i, col in enumerate(["low_freq", "med_freq", "high_freq"]):
+    bars = ax.bar(agg.index, agg[col], bottom=bottom, label=labels[i], color=colors[i])
     for bar in bars:
         height = bar.get_height()
         if height > 0:
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_y() + height / 2,
-                    f"{int(height)}", ha='center', va='center', fontsize=8, color='black')
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_y() + height / 2, f"{height:,}",
+                    ha="center", va="center", fontsize=8, color="black")
     bottom = agg[col] if bottom is None else bottom + agg[col]
+
+# Add % labels on top
+total_users = agg["total"].sum()
+for i, v in enumerate(agg["total"]):
+    ax.text(i, v + 5000, f"{v * 100 / total_users:.1f}%", ha="center", fontsize=9, fontweight="bold")
 
 ax.set_ylabel("Users")
 ax.set_title("Frequency of Nudges by Activity Level")
 ax.legend(title="Nudge Frequency")
+plt.xticks(rotation=0)
 st.pyplot(fig)
-del agg, fig
-gc.collect()
+del agg, fig; gc.collect()
+
 
 
 # ─── Campaign Performance Table ────────────────────────────────
@@ -159,7 +169,6 @@ campaigns = qdf(f"""
            SUM(sent)::INT AS sent,
            SUM(delivered)::INT AS delivered,
            ROUND(SUM(delivered)*100.0/SUM(sent),1) AS delivery_rate,
-           ROUND(SUM(clicks) * 100.0 / SUM(delivered), 1)    AS click_rate,
            ROUND(SUM(delivered)*0.96*0.0107 + SUM(delivered)*0.04*0.0014) AS cost,
            ROUND(AVG(inactive_pct),1) AS "Inactive %",
            ROUND(AVG(active_pct),1) AS "Active %",
@@ -182,7 +191,6 @@ st.subheader("🎯 Campaign Performance")
 st.dataframe(
     campaigns.style.format({
         "delivery_rate": "{:.1f}%",
-        "click_rate": "{:.1f}%",
         "cost": "${:,.0f}",
         **{col: "{:.1f}%" for col in campaigns.columns if "%" in col or ":" in col}
     }),
