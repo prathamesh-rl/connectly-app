@@ -102,7 +102,7 @@ funnel = qdf(f"""
     SELECT product AS Product,
            SUM(sent)::INT AS Sent,
            SUM(delivered)::INT AS Delivered,
-           ROUND(SUM(delivered)*100.0/SUM(sent), 1) AS Delivery Rate
+           ROUND(SUM(delivered)*100.0/SUM(sent), 1) AS "Delivery Rate"
     FROM connectly_slim_new.funnel_by_product
     WHERE {month_clause}
     GROUP BY 1 ORDER BY sent DESC
@@ -173,10 +173,10 @@ del agg, fig; gc.collect()
 
 # ─── Campaign Performance Table ────────────────────────────────
 campaigns = qdf(f"""
-    SELECT sendout_name AS Campaign Name,
+    SELECT sendout_name AS "Campaign Name",
            SUM(sent)::INT AS Sent,
            SUM(delivered)::INT AS Delivered,
-           ROUND(SUM(delivered)*100.0/SUM(sent),1) AS Delivery Rate,
+           ROUND(SUM(delivered)*100.0/SUM(sent),1) AS "Delivery Rate",
            ROUND(SUM(delivered)*0.96*0.0107 + SUM(delivered)*0.04*0.0014) AS Cost,
            ROUND(AVG(inactive_pct),1) AS "Inactive %",
            ROUND(AVG(active_pct),1) AS "Active %",
