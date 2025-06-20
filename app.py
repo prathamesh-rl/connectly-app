@@ -99,10 +99,10 @@ if not sel_month_dates or not sel_products:
     st.stop()
 # ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
-    SELECT product,
-           SUM(sent)::INT AS sent,
-           SUM(delivered)::INT AS delivered,
-           ROUND(SUM(delivered)*100.0/SUM(sent), 1) AS delivery_rate
+    SELECT product AS Product,
+           SUM(sent)::INT AS Sent,
+           SUM(delivered)::INT AS Delivered,
+           ROUND(SUM(delivered)*100.0/SUM(sent), 1) AS Delivery Rate
     FROM connectly_slim_new.funnel_by_product
     WHERE {month_clause}
     GROUP BY 1 ORDER BY sent DESC
