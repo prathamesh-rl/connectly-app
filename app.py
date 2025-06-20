@@ -94,7 +94,7 @@ funnel = qdf(f"""
            SUM(sent)::INT AS sent,
            SUM(delivered)::INT AS delivered,
            ROUND(SUM(delivered)*100.0/SUM(sent), 1) AS delivery_rate
-            ROUND(COUNT(DISTINCT CASE WHEN clicks > 0 THEN user END)*100.0/COUNT(DISTINCT user),1) AS click_rate
+            ROUND(SUM(clicks)*100.0 / COUNT(DISTINCT user), 1) AS click_rate
     FROM connectly_slim_new.funnel_by_product
     WHERE {month_clause}
     GROUP BY 1 ORDER BY sent DESC
@@ -174,7 +174,9 @@ campaigns = qdf(f"""
 st.subheader("🎯 Campaign Performance")
 st.dataframe(
     campaigns.style.format({
-        "delivery_rate": "{:.1f}%","click_rate": "{:.1f}%",  "cost": "${:,.0f}",
+        "delivery_rate": "{:.1f}%",
+        "click_rate": "{:.1f}%",
+        "cost": "${:,.0f}",
         **{col: "{:.1f}%" for col in campaigns.columns if "%" in col or ":" in col}
     }),
     use_container_width=True
