@@ -107,15 +107,15 @@ funnel = qdf(f"""
     WHERE {month_clause}
     GROUP BY 1 ORDER BY sent DESC
 """)
-total = funnel[["sent", "delivered"]].sum().to_frame().T
-total["delivery_rate"] = (funnel["delivered"].sum() * 100 / funnel["sent"].sum()).round(1)
-total.insert(0, "product", "Total")
+total = funnel[["Sent", "Delivered"]].sum().to_frame().T
+total["Delivery Rate"] = (funnel["Delivered"].sum() * 100 / funnel["Sent"].sum()).round(1)
+total.insert(0, "Product", "Total")
 funnel = pd.concat([funnel, total], ignore_index=True)
 
 st.subheader("🪜 Funnel by Product")
 st.dataframe(
     funnel.style.format({
-        "sent": "{:,.0f}", "delivered": "{:,.0f}", "delivery_rate": "{:.1f}%"
+        "Sent": "{:,.0f}", "Delivered": "{:,.0f}", "Delivery Rate": "{:.1f}%"
     }).apply(
         lambda x: ['background-color: #f0f0f0' if x.name == funnel.index[-1] else '' for _ in x],
     axis=1
@@ -198,8 +198,8 @@ campaigns = qdf(f"""
 st.subheader("🎯 Campaign Performance")
 st.dataframe(
     campaigns.style.format({
-        "delivery_rate": "{:.1f}%",
-        "cost": "${:,.0f}",
+        "Delivery Rate": "{:.1f}%",
+        "Cost": "${:,.0f}",
         **{col: "{:.1f}%" for col in campaigns.columns if "%" in col or ":" in col}
     }),
     use_container_width=True
