@@ -164,7 +164,7 @@ for i, v in enumerate(agg["total"]):
 
 ax.set_ylabel("Users")
 ax.set_title("Frequency of Nudges by Activity Level")
-ax.legend(title="Nudge Frequency")
+ax.legend(title="Nudge Frequency (Msg/Month)")
 plt.xticks(rotation=0)
 st.pyplot(fig)
 del agg, fig; gc.collect()
@@ -173,11 +173,11 @@ del agg, fig; gc.collect()
 
 # ─── Campaign Performance Table ────────────────────────────────
 campaigns = qdf(f"""
-    SELECT sendout_name,
-           SUM(sent)::INT AS sent,
-           SUM(delivered)::INT AS delivered,
-           ROUND(SUM(delivered)*100.0/SUM(sent),1) AS delivery_rate,
-           ROUND(SUM(delivered)*0.96*0.0107 + SUM(delivered)*0.04*0.0014) AS cost,
+    SELECT sendout_name AS Campaign Name,
+           SUM(sent)::INT AS Sent,
+           SUM(delivered)::INT AS Delivered,
+           ROUND(SUM(delivered)*100.0/SUM(sent),1) AS Delivery Rate,
+           ROUND(SUM(delivered)*0.96*0.0107 + SUM(delivered)*0.04*0.0014) AS Cost,
            ROUND(AVG(inactive_pct),1) AS "Inactive %",
            ROUND(AVG(active_pct),1) AS "Active %",
            ROUND(AVG(high_pct),1) AS "Highly Active %",
