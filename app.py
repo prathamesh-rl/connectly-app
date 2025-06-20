@@ -142,7 +142,7 @@ agg = agg.loc[["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Da
 agg["total"] = agg.sum(axis=1)
 
 colors = ["#bde0fe", "#ffd60a", "#ff5a5f"]  # pastel blue, yellow, red
-labels = ["Low", "Medium", "High"]
+labels = ["Low(1-4)", "Medium(5-10)", "High(>10)"]
 
 st.subheader("📊 Nudge Frequency × User Activity")
 fig, ax = plt.subplots(figsize=(10, 5), facecolor="white")
