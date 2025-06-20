@@ -88,6 +88,10 @@ sel_months = st.multiselect("📅 Months", month_labels, default=["May 2025"])
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
 month_clause = "month IN (" + ", ".join([f"DATE '{d}'" for d in sel_month_dates]) + ")"
 
+# 🚨 ADD THIS CHECK
+if not sel_month_dates or not sel_products:
+    st.warning("Please select at least one month and one product.")
+    st.stop()
 
 # ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
