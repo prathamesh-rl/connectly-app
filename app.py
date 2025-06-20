@@ -79,14 +79,12 @@ gc.collect()
 
 # ─── Filters (Below Graphs) ────────────────────────────────────
 months_df = qdf("SELECT DISTINCT month FROM connectly_slim_new.funnel_by_product ORDER BY month")
-products_df = qdf("SELECT DISTINCT product FROM connectly_slim_new.funnel_by_product ORDER BY product")
 months = months_df["month"].tolist()
 month_labels = pd.to_datetime(months).strftime("%b %Y").tolist()
-products = products_df["product"].tolist()
-c1, c2 = st.columns(2)
-sel_months = c1.multiselect("📅 Months", month_labels, default=["May 2025"])
+
+sel_months = st.multiselect("📅 Months", month_labels, default=["May 2025"])
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
-month_clause = "month IN ({})".format(", ".join([f"DATE '{d}'" for d in sel_month_dates]))
+month_clause = f"month IN ({', '.join([f'DATE \'{d}\'' for d in sel_month_dates])})"
 
 # ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
@@ -94,26 +92,34 @@ funnel = qdf(f"""
            SUM(sent)::INT AS sent,
            SUM(delivered)::INT AS delivered,
            ROUND(SUM(delivered)*100.0/SUM(sent), 1) AS delivery_rate
-            ROUND(SUM(clicks)*100.0 / COUNT(DISTINCT user), 1) AS click_rate
     FROM connectly_slim_new.funnel_by_product
     WHERE {month_clause}
     GROUP BY 1 ORDER BY sent DESC
 """)
 total = funnel[["sent", "delivered"]].sum().to_frame().T
-total["delivery_rate"] = (funnel["delivered"].sum() * 100.0 / funnel["sent"].sum()).round(1)
+total["delivery_rate"] = (funnel["delivered"].sum() * 100 / funnel["sent"].sum()).round(1)
 total.insert(0, "product", "Total")
 funnel = pd.concat([funnel, total], ignore_index=True)
 
 st.subheader("🪜 Funnel by Product")
 st.dataframe(
-    funnel.style
-        .format({"sent": "{:,.0f}", "delivered": "{:,.0f}", "delivery_rate": "{:.1f}%"})
-        .map(lambda v: "background-color: #222" if v == "Total" else "", subset=pd.IndexSlice[funnel.index[-1:], :])
+    funnel.style.format({
+        "sent": "{:,.0f}", "delivered": "{:,.0f}", "delivery_rate": "{:.1f}%"
+    }).apply(
+        lambda x: ["background-color: #eee" if v == "Total" else "" for v in x], axis=1, subset=["product"]
+    ),
+    use_container_width=True
 )
 
-# ─── Product Filter (After Funnel) ─────────────────────────────
-sel_products = st.multiselect("🛍️ Products", products, default=products, label_visibility="visible")
-prod_clause = "product IN ({})".format(", ".join([repr(p) for p in sel_products]))
+# Now fetch product list and show filter
+products_df = qdf("SELECT DISTINCT product FROM connectly_slim_new.funnel_by_product ORDER BY product")
+products = products_df["product"].tolist()
+
+sel_products = st.multiselect("🛍️ Products", products, default=products)
+
+# Clause for remaining queries
+prod_clause = f"product IN ({', '.join([repr(p) for p in sel_products])})"
+
 
 # Nudge vs Activity (layered bar) — light theme ready
 act = qdf(f"SELECT * FROM connectly_slim_new.nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
