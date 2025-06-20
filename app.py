@@ -88,11 +88,15 @@ sel_months = st.multiselect("📅 Months", month_labels, default=["May 2025"])
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
 month_clause = "month IN (" + ", ".join([f"DATE '{d}'" for d in sel_month_dates]) + ")"
 
-# 🚨 ADD THIS CHECK
+# Fetch product list and show filter (even if UI comes later, sel_products must be defined early)
+products_df = qdf("SELECT DISTINCT product FROM connectly_slim_new.funnel_by_product ORDER BY product")
+products = products_df["product"].tolist()
+sel_products = products  # default to all products initially
+
+# This prevents sel_products from being undefined before funnel block
 if not sel_month_dates or not sel_products:
     st.warning("Please select at least one month and one product.")
     st.stop()
-
 # ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
     SELECT product,
