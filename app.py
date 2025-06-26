@@ -143,10 +143,11 @@ agg.index = agg.index.map({
     '1-10': "Active (1-10 Days)",
     '>10': "Highly Active (>10 Days)"
 })
+agg = agg.groupby(agg.index).sum()  # ensure no duplicates
 agg = agg.reindex(["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"], fill_value=0)
 agg["total"] = agg.sum(axis=1)
 
-colors = ["#bde0fe", "#ffd60a", "#ff5a5f"]  # pastel blue, yellow, red
+colors = ["#bde0fe", "#ffd60a", "#ff5a5f"]
 labels = ["Low(1-4)", "Medium(5-10)", "High(>10)"]
 
 st.subheader("📊 Nudge Frequency × User Activity")
@@ -162,7 +163,6 @@ for i, col in enumerate(["low_freq", "med_freq", "high_freq"]):
                     ha="center", va="center", fontsize=8, color="black")
     bottom = agg[col] if bottom is None else bottom + agg[col]
 
-# Add % labels on top
 total_users = agg["total"].sum()
 for i, v in enumerate(agg["total"]):
     ax.text(i, v + 5000, f"{v * 100 / total_users:.1f}%", ha="center", fontsize=9, fontweight="bold")
@@ -173,7 +173,6 @@ ax.legend(title="Nudge Frequency (Msg/Month)")
 plt.xticks(rotation=0)
 st.pyplot(fig)
 del agg, fig; gc.collect()
-
 
 
 # ─── Campaign Performance Table ────────────────────────────────
