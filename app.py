@@ -138,7 +138,12 @@ act = qdf(f"SELECT * FROM connectly_slim_new.nudge_vs_activity WHERE {month_clau
 month_count = len(sel_month_dates)
 
 agg = act.groupby("active_bucket")[["low_freq", "med_freq", "high_freq"]].sum().astype(int)
-agg = agg.loc[["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"]]
+agg.index = agg.index.map({
+    '0': "Inactive (0 Days)",
+    '1-10': "Active (1-10 Days)",
+    '>10': "Highly Active (>10 Days)"
+})
+agg = agg.reindex(["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"], fill_value=0)
 agg["total"] = agg.sum(axis=1)
 
 colors = ["#bde0fe", "#ffd60a", "#ff5a5f"]  # pastel blue, yellow, red
