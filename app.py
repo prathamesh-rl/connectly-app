@@ -23,7 +23,12 @@ def get_con():
             f.write(requests.get(DB_URL).content)
     return duckdb.connect(DB_PATH, read_only=True)
 
-con = get_con()
+# Reconnect if needed
+try:
+    con = get_con()
+    con.execute("SELECT 1")  # trigger a trivial query
+except:
+    con = duckdb.connect(DB_PATH, read_only=True)
 qdf = lambda q: con.sql(q).df()
 
 # ─── Monthly Messaging (unfiltered) ────────────────────────────
