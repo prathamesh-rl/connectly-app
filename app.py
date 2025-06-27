@@ -157,7 +157,8 @@ for i, col in enumerate(["low_freq", "med_freq", "high_freq"]):
                     ha="center", va="center", fontsize=8, color="black")
     bottom = agg[col] if bottom is None else bottom + agg[col]
 
-## Add % labels on top (only for non-zero bars)
+# Add % labels on top
+total_users = agg["total"].sum()
 for i, v in enumerate(agg["total"]):
     if v > 0:
         ax.text(i, v + v * 0.02, f"{v * 100 / total_users:.1f}%", ha="center", fontsize=9, fontweight="bold")
