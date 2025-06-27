@@ -1,9 +1,9 @@
 import streamlit as st, duckdb, pandas as pd, matplotlib.pyplot as plt
 import matplotlib.style as style, gc, requests, os
 
-# ─── Configuration ───
-style.use("default")
-BG, TXT = "#ffffff", "#000000"
+# ─── Configuration ─────────────────────────────────────────────
+style.use("default")  # use matplotlib's default light theme
+BG, TXT = "#ffffff", "#000000"  # white background, black text
 plt.rcParams["text.color"] = TXT
 plt.rcParams["axes.labelcolor"] = TXT
 plt.rcParams["xtick.color"] = TXT
@@ -26,7 +26,7 @@ def get_con():
 con = get_con()
 qdf = lambda q: con.sql(q).df()
 
-# ─── Monthly Messaging (unfiltered) ───
+# ─── Monthly Messaging (unfiltered) ────────────────────────────
 monthly = qdf("SELECT * FROM connectly_slim_new.monthly_metrics ORDER BY month")
 monthly["label"] = pd.to_datetime(monthly.month).dt.strftime("%b %y")
 
@@ -54,6 +54,7 @@ st.subheader("📈 Monthly Messaging & Cost Overview")
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor=BG)
 x = range(len(monthly))
 
+# --- Left: Delivered ---
 bars = ax1.bar(x, monthly.delivered, width=0.5, color="#4A90E2", label="Delivered")
 for i, r in enumerate(monthly.delivered):
     ax1.text(i, r, f"{r/1e6:.1f}M", ha='center', va='bottom', fontsize=8, color='black')
@@ -62,8 +63,9 @@ ax1.set_xticklabels(monthly.label, rotation=45)
 ax1.set_title("Delivered Messages")
 ax1.legend()
 
-ax2.plot(x, monthly.meta_cost, marker="o", label="Meta $", color="#1F77B4")
-ax2.plot(x, monthly.connectly_cost, marker="o", label="Connectly $", color="#FF7F0E")
+# --- Right: Costs ---
+ax2.plot(x, monthly.meta_cost, marker="o", label="Meta $", color="#1F77B4")      # softer blue
+ax2.plot(x, monthly.connectly_cost, marker="o", label="Connectly $", color="#FF7F0E")  # orange
 for i in x:
     ax2.text(i, monthly.meta_cost[i], f"${monthly.meta_cost[i]:,.0f}", ha='center', va='bottom', fontsize=8)
     ax2.text(i, monthly.connectly_cost[i], f"${monthly.connectly_cost[i]:,.0f}", ha='center', va='bottom', fontsize=8)
@@ -76,23 +78,26 @@ st.pyplot(fig)
 del monthly, fig
 gc.collect()
 
-# ─── Filters ───
+
+# ─── Filters (Below Graphs) ────────────────────────────────────
 months_df = qdf("SELECT DISTINCT month FROM connectly_slim_new.funnel_by_product ORDER BY month")
 months = months_df["month"].tolist()
 month_labels = pd.to_datetime(months).strftime("%b %Y").tolist()
+
 sel_months = st.multiselect("📅 Months", month_labels, default=["May 2025"])
 sel_month_dates = [months[month_labels.index(m)] for m in sel_months]
+month_clause = "month IN (" + ", ".join([f"DATE '{d}'" for d in sel_month_dates]) + ")"
 
-products_df = qdf("SELECT DISTINCT product FROM connectly_slim_new.nudge_vs_activity ORDER BY product")
-products = [p for p in products_df["product"].tolist() if p.lower() not in ["test", "unknown"]]
-sel_products = st.multiselect("🏥️ Products", products, default=products)
+# Fetch product list and show filter (even if UI comes later, sel_products must be defined early)
+products_df = qdf("SELECT DISTINCT product FROM connectly_slim_new.funnel_by_product ORDER BY product")
+products = products_df["product"].tolist()
+sel_products = products  # default to all products initially
 
+# This prevents sel_products from being undefined before funnel block
 if not sel_month_dates or not sel_products:
     st.warning("Please select at least one month and one product.")
     st.stop()
-
-# ─── Funnel by Product ───
-month_clause = "month IN (" + ", ".join([f"DATE '{d}'" for d in sel_month_dates]) + ")"
+# ─── Funnel by Product ─────────────────────────────────────────
 funnel = qdf(f"""
     SELECT product AS Product,
            SUM(sent)::INT AS Sent,
@@ -107,60 +112,66 @@ total["Delivery Rate"] = (funnel["Delivered"].sum() * 100 / funnel["Sent"].sum()
 total.insert(0, "Product", "Total")
 funnel = pd.concat([funnel, total], ignore_index=True)
 
-st.subheader("🩜 Funnel by Product")
+st.subheader("🪜 Funnel by Product")
 st.dataframe(
     funnel.style.format({
         "Sent": "{:,.0f}", "Delivered": "{:,.0f}", "Delivery Rate": "{:.1f}%"
     }).apply(
         lambda x: ['background-color: #f0f0f0' if x.name == funnel.index[-1] else '' for _ in x],
-    axis=1),
+    axis=1
+    ),
     use_container_width=True
 )
 
-# ─── Nudge vs Activity (robust version) ───
-valid_combos = qdf("SELECT DISTINCT month, product FROM connectly_slim_new.nudge_vs_activity")
-valid_combos["month"] = valid_combos["month"].astype(str)
-valid_set = set(zip(valid_combos["month"], valid_combos["product"]))
-selected_combos = [(str(m), p) for m in sel_month_dates for p in sel_products if (str(m), p) in valid_set]
+# Now fetch product list and show filter
+products_df = qdf("SELECT DISTINCT product FROM connectly_slim_new.funnel_by_product ORDER BY product")
+products = products_df["product"].tolist()
 
-if not selected_combos:
-    st.warning("No user data available for the selected months and products.")
-    st.stop()
+sel_products = st.multiselect("🛍️ Products", products, default=products)
 
-combo_clauses = [f"(month = DATE '{m}' AND product = '{p}')" for m, p in selected_combos]
-combo_clause = " OR ".join(combo_clauses)
+# Clause for remaining queries
+prod_clause = "product IN (" + ", ".join([f"'{p}'" for p in sel_products]) + ")"
 
-act = qdf(f"""
-    SELECT * FROM connectly_slim_new.nudge_vs_activity
-    WHERE {combo_clause}
-""")
 
-if act.empty:
-    st.warning("No user data found for selected filters.")
-    st.stop()
+# ─── Nudge vs Activity (Layered Bar, With % and Labels) ───────────────
+act = qdf(f"SELECT * FROM connectly_slim_new.nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
+month_count = len(sel_month_dates)
 
-act["users"] = act["users"].astype(int)
-pivot = act.pivot_table(index="active_bucket", values="users", aggfunc="sum")
-pivot.index = pivot.index.map({
-    '0': "Inactive (0 Days)",
-    '1-10': "Active (1-10 Days)",
-    '>10': "Highly Active (>10 Days)"
-})
-pivot = pivot.groupby(pivot.index).sum()
-pivot = pivot.reindex(["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"], fill_value=0)
+agg = act.groupby("active_bucket")[["low_freq", "med_freq", "high_freq"]].sum().astype(int)
+agg = agg.reindex(["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"], fill_value=0)
+agg["total"] = agg.sum(axis=1)
+
+colors = ["#bde0fe", "#ffd60a", "#ff5a5f"]  # pastel blue, yellow, red
+labels = ["Low(1-4)", "Medium(5-10)", "High(>10)"]
 
 st.subheader("📊 Nudge Frequency × User Activity")
 fig, ax = plt.subplots(figsize=(10, 5), facecolor="white")
-bars = ax.bar(pivot.index, pivot["users"], color=["#bde0fe", "#ffd60a", "#ff5a5f"])
-for bar in bars:
-    height = bar.get_height()
-    ax.text(bar.get_x() + bar.get_width() / 2, height + 500, f"{height:,}", ha="center", va="bottom", fontsize=8)
-ax.set_ylabel("Users")
-ax.set_title("User Activity Buckets by Nudge Exposure")
-st.pyplot(fig)
+bottom = None
 
-# ─── Campaign Performance Table ───
-prod_clause = "product IN (" + ", ".join([f"'{p}'" for p in sel_products]) + ")"
+for i, col in enumerate(["low_freq", "med_freq", "high_freq"]):
+    bars = ax.bar(agg.index, agg[col], bottom=bottom, label=labels[i], color=colors[i])
+    for bar in bars:
+        height = bar.get_height()
+        if height > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_y() + height / 2, f"{height:,}",
+                    ha="center", va="center", fontsize=8, color="black")
+    bottom = agg[col] if bottom is None else bottom + agg[col]
+
+# Add % labels on top
+total_users = agg["total"].sum()
+for i, v in enumerate(agg["total"]):
+    ax.text(i, v + 5000, f"{v * 100 / total_users:.1f}%", ha="center", fontsize=9, fontweight="bold")
+
+ax.set_ylabel("Users")
+ax.set_title("Frequency of Nudges by Activity Level")
+ax.legend(title="Nudge Frequency (Msg/Month)")
+plt.xticks(rotation=0)
+st.pyplot(fig)
+del agg, fig; gc.collect()
+
+
+
+# ─── Campaign Performance Table ────────────────────────────────
 campaigns = qdf(f"""
     SELECT sendout_name AS "Campaign Name",
            SUM(sent)::INT AS Sent,
@@ -184,7 +195,7 @@ campaigns = qdf(f"""
     GROUP BY 1 ORDER BY sent DESC
 """)
 
-st.subheader("🌟 Campaign Performance")
+st.subheader("🎯 Campaign Performance")
 st.dataframe(
     campaigns.style.format({
         "Delivery Rate": "{:.1f}%",
