@@ -133,46 +133,44 @@ sel_products = st.multiselect("🛍️ Products", products, default=products)
 prod_clause = "product IN (" + ", ".join([f"'{p}'" for p in sel_products]) + ")"
 
 
-# ─── Nudge vs Activity (Layered Bar, With % and Labels) ───────────────
-act = qdf(f"SELECT * FROM connectly_slim_new.nudge_vs_activity WHERE {month_clause} AND {prod_clause}")
-month_count = len(sel_month_dates)
+# Load the table (filtered by month and product)
+act = qdf(f"""
+    SELECT * FROM connectly_slim_new.nudge_vs_activity
+    WHERE {month_clause} AND {prod_clause}
+""")
 
-agg = act.groupby("active_bucket")[["low_freq", "med_freq", "high_freq"]].sum().astype(int)
-agg.index = agg.index.map({
+# Pivot the data to wide format
+pivot = act.pivot_table(
+    index="active_bucket",
+    values="users",
+    aggfunc="sum"
+)
+
+# Rename the buckets for display
+bucket_labels = {
     '0': "Inactive (0 Days)",
     '1-10': "Active (1-10 Days)",
     '>10': "Highly Active (>10 Days)"
-})
-agg = agg.groupby(agg.index).sum()  # ensure no duplicates
-agg = agg.reindex(["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"], fill_value=0)
-agg["total"] = agg.sum(axis=1)
+}
+pivot.index = pivot.index.map(bucket_labels)
 
-colors = ["#bde0fe", "#ffd60a", "#ff5a5f"]
-labels = ["Low(1-4)", "Medium(5-10)", "High(>10)"]
+# Ensure all expected rows are present
+pivot = pivot.reindex(["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"], fill_value=0)
 
+# Plot
 st.subheader("📊 Nudge Frequency × User Activity")
 fig, ax = plt.subplots(figsize=(10, 5), facecolor="white")
-bottom = None
 
-for i, col in enumerate(["low_freq", "med_freq", "high_freq"]):
-    bars = ax.bar(agg.index, agg[col], bottom=bottom, label=labels[i], color=colors[i])
-    for bar in bars:
-        height = bar.get_height()
-        if height > 0:
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_y() + height / 2, f"{height:,}",
-                    ha="center", va="center", fontsize=8, color="black")
-    bottom = agg[col] if bottom is None else bottom + agg[col]
+bars = ax.bar(pivot.index, pivot["users"], color=["#bde0fe", "#ffd60a", "#ff5a5f"])
 
-total_users = agg["total"].sum()
-for i, v in enumerate(agg["total"]):
-    ax.text(i, v + 5000, f"{v * 100 / total_users:.1f}%", ha="center", fontsize=9, fontweight="bold")
+for bar in bars:
+    height = bar.get_height()
+    ax.text(bar.get_x() + bar.get_width() / 2, height + 500, f"{height:,}", ha="center", va="bottom", fontsize=8)
 
 ax.set_ylabel("Users")
-ax.set_title("Frequency of Nudges by Activity Level")
-ax.legend(title="Nudge Frequency (Msg/Month)")
-plt.xticks(rotation=0)
+ax.set_title("User Activity Buckets by Nudge Exposure")
 st.pyplot(fig)
-del agg, fig; gc.collect()
+
 
 
 # ─── Campaign Performance Table ────────────────────────────────
