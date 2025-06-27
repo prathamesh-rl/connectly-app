@@ -133,34 +133,25 @@ sel_products = st.multiselect("🛍️ Products", products, default=products)
 prod_clause = "product IN (" + ", ".join([f"'{p}'" for p in sel_products]) + ")"
 
 
-# Load the table (filtered by month and product)
 act = qdf(f"""
     SELECT * FROM connectly_slim_new.nudge_vs_activity
     WHERE {month_clause} AND {prod_clause}
 """)
 
-# Pivot the data to wide format
-if "users" not in act.columns:
+# Safeguard: Stop early if nothing is returned
+if act.empty or "users" not in act.columns:
     st.warning("No user data found for selected filters.")
     st.stop()
 
+# Safe processing
 act["users"] = act["users"].astype(int)
-
-pivot = act.pivot_table(
-    index="active_bucket",
-    values="users",
-    aggfunc="sum"
-)
-
-# Rename the buckets for display
-bucket_labels = {
+pivot = act.pivot_table(index="active_bucket", values="users", aggfunc="sum")
+pivot.index = pivot.index.map({
     '0': "Inactive (0 Days)",
     '1-10': "Active (1-10 Days)",
     '>10': "Highly Active (>10 Days)"
-}
-pivot.index = pivot.index.map(bucket_labels)
-
-# Ensure all expected rows are present
+})
+pivot = pivot.groupby(pivot.index).sum()
 pivot = pivot.reindex(["Inactive (0 Days)", "Active (1-10 Days)", "Highly Active (>10 Days)"], fill_value=0)
 
 # Plot
