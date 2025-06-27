@@ -140,6 +140,12 @@ act = qdf(f"""
 """)
 
 # Pivot the data to wide format
+if "users" not in act.columns:
+    st.warning("No user data found for selected filters.")
+    st.stop()
+
+act["users"] = act["users"].astype(int)
+
 pivot = act.pivot_table(
     index="active_bucket",
     values="users",
