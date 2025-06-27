@@ -157,10 +157,10 @@ for i, col in enumerate(["low_freq", "med_freq", "high_freq"]):
                     ha="center", va="center", fontsize=8, color="black")
     bottom = agg[col] if bottom is None else bottom + agg[col]
 
-# Add % labels on top
-total_users = agg["total"].sum()
+## Add % labels on top (only for non-zero bars)
 for i, v in enumerate(agg["total"]):
-    ax.text(i, v + 5000, f"{v * 100 / total_users:.1f}%", ha="center", fontsize=9, fontweight="bold")
+    if v > 0:
+        ax.text(i, v + v * 0.02, f"{v * 100 / total_users:.1f}%", ha="center", fontsize=9, fontweight="bold")
 
 ax.set_ylabel("Users")
 ax.set_title("Frequency of Nudges by Activity Level")
